@@ -5,6 +5,7 @@ import math
 import os
 import base64
 import json
+import pywhatkit as whatsapp
 
 # Simple distance approximation (km)
 def calculate_distance(lat1, lon1, lat2, lon2):
@@ -71,7 +72,7 @@ def initialize_state():
                 "quantity_kg": 8,
                 "reported_at": "2026-06-19 10:30",
                 "edible_human": True,
-                "compost": False,
+                "edible_pet": False,
                 "edible_animal": True,
                 "compost": False,
                 "notes": "All within best-by date, no spoilage. Excellent for food banks.",
@@ -79,6 +80,8 @@ def initialize_state():
                 "claimed_by": None,
                 "image_b64": None,
                 "ai_review": None,
+                "admin_approved": False,
+                "ai_verified": False,
             },
             {
                 "id": 2,
@@ -91,7 +94,7 @@ def initialize_state():
                 "quantity_kg": 12,
                 "reported_at": "2026-06-19 09:15",
                 "edible_human": False,
-                "compost": False,
+                "edible_pet": False,
                 "edible_animal": False,
                 "compost": True,
                 "notes": "Good for composting",
@@ -99,6 +102,8 @@ def initialize_state():
                 "claimed_by": "ABC SHELTER VOLUNTEER",
                 "image_b64": None,
                 "ai_review": None,
+                "admin_approved": False,
+                "ai_verified": False,
             },
             {
                 "id": 3,
@@ -111,14 +116,16 @@ def initialize_state():
                 "quantity_kg": 6,
                 "reported_at": "2026-06-18 18:45",
                 "edible_human": False,
-                "compost": True,
+                "edible_pet": False,
                 "edible_animal": True,
-                "compost": False,
+                "compost": True,
                 "notes": "Meat may be spoiled for humans. Safe for pets (no onions/garlic) and livestock after inspection.",
                 "status": "Available",
                 "claimed_by": None,
                 "image_b64": None,
                 "ai_review": None,
+                "admin_approved": False,
+                "ai_verified": False,
             },
             {
                 "id": 4,
@@ -131,7 +138,7 @@ def initialize_state():
                 "quantity_kg": 5,
                 "reported_at": "2026-06-19 11:00",
                 "edible_human": True,
-                "compost": False,
+                "edible_pet": False,
                 "edible_animal": False,
                 "compost": False,
                 "notes": "Human-safe. Contains chocolate & xylitol - NOT safe for dogs/cats.",
@@ -139,6 +146,8 @@ def initialize_state():
                 "claimed_by": "Local Shelter Volunteer",
                 "image_b64": None,
                 "ai_review": None,
+                "admin_approved": False,
+                "ai_verified": False,
             },
         ]
 
@@ -253,12 +262,18 @@ def volunteer_page():
 
                 if row["status"] == "Available":
                     if st.button(f"Claim pickup #{row['id']}", key=f"claim_{row['id']}"):
+                        found = False
                         for report in st.session_state.reports:
                             if report["id"] == row["id"]:
-                                report["status"] = "Claimed"
-                                report["claimed_by"] = st.session_state.user_name
+                                if report["status"] == "Available":
+                                    report["status"] = "Claimed"
+                                    report["claimed_by"] = st.session_state.user_name
+                                    found = True
                                 break
-                        st.success("Pickup claimed. The donor will be notified in a real deployment.")
+                        if found:
+                            st.success("Pickup claimed. The donor will be notified in a real deployment.")
+                        else:
+                            st.warning("This pickup was already claimed by another volunteer.")
                         st.rerun()
     else:
         st.warning("No opportunities match the selected filters.")
@@ -278,7 +293,7 @@ def admin_page():
 
     report_df = pd.DataFrame(st.session_state.reports)
     st.markdown("### Current Reports")
-    st.dataframe(report_df[["id", "restaurant", "city", "quantity_kg", "status", "claimed_by"]])
+    st.dataframe(report_df[["id", "restaurant", "city", "quantity_kg", "status", "claimed_by", "admin_approved"]])
 
     for report in st.session_state.reports:
         with st.expander(f"Report #{report['id']} — {report['restaurant']}"):
@@ -288,9 +303,10 @@ def admin_page():
             st.write(f"**Quantity:** {report['quantity_kg']} kg")
             st.write(f"**Status:** {report['status']}")
             st.write(f"**Claimed By:** {report.get('claimed_by') or 'None'}")
+            st.write(f"**Admin Approved:** {'✅ Yes' if report.get('admin_approved') else '❌ No'}")
             st.write(
                 "Humans: " + ("✅" if report["edible_human"] else "❌") +
-                " | Pets: " + ("✅" if report["compost"] else "❌") +
+                " | Pets: " + ("✅" if report.get("edible_pet", False) else "❌") +
                 " | Animals: " + ("✅" if report["edible_animal"] else "❌") +
                 " | Compost: " + ("✅" if report["compost"] else "❌")
             )
@@ -303,26 +319,41 @@ def admin_page():
             else:
                 st.write("*No image uploaded for this report.*")
 
-            if st.button(f"Mark Available #{report['id']}", key=f"admin_avail_{report['id']}"):
-                report["status"] = "Available"
-                report["claimed_by"] = None
-                st.success("Report marked available.")
-                st.rerun()
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if st.button(f"Mark Available #{report['id']}", key=f"admin_avail_{report['id']}"):
+                    report["status"] = "Available"
+                    report["claimed_by"] = None
+                    st.success("Report marked available.")
+                    st.rerun()
 
-            if st.button(f"Mark Claimed #{report['id']}", key=f"admin_claimed_{report['id']}"):
-                report["status"] = "Claimed"
-                if not report.get("claimed_by"):
-                    report["claimed_by"] = "Admin assigned"
-                st.success("Report marked claimed.")
-                st.rerun()
+            with col2:
+                if st.button(f"Mark Claimed #{report['id']}", key=f"admin_claimed_{report['id']}"):
+                    report["status"] = "Claimed"
+                    if not report.get("claimed_by"):
+                        report["claimed_by"] = "Admin assigned"
+                    st.success("Report marked claimed.")
+                    st.rerun()
 
-            if report.get("image_b64") and st.button(f"AI verify image #{report['id']}", key=f"ai_verify_{report['id']}"):
-                image_bytes = base64.b64decode(report["image_b64"])
-                with st.spinner("Running AI verification..."):
-                    ai_result = classify_image_with_ai(image_bytes)
-                report["ai_review"] = json.dumps(ai_result, indent=2)
-                st.success("AI verification completed and saved to report.")
-                st.rerun()
+            with col3:
+                if st.button(f"Approve Report #{report['id']}", key=f"admin_approve_{report['id']}"):
+                    report["admin_approved"] = True
+                    st.success("Report approved for verification.")
+                    st.rerun()
+
+            if report.get("image_b64") and report.get("admin_approved") and not report.get("ai_verified"):
+                if st.button(f"AI verify image #{report['id']}", key=f"ai_verify_{report['id']}"):
+                    image_bytes = base64.b64decode(report["image_b64"])
+                    with st.spinner("Running AI verification..."):
+                        ai_result = classify_image_with_ai(image_bytes)
+                    report["ai_review"] = json.dumps(ai_result, indent=2)
+                    report["ai_verified"] = True
+                    st.success("AI verification completed and saved to report.")
+                    st.rerun()
+            elif report.get("image_b64") and not report.get("admin_approved"):
+                st.warning("⚠️ Approve this report first before AI verification.")
+            elif report.get("ai_verified"):
+                st.info("✅ AI verification already completed for this report.")
 
             note_update = st.text_area(
                 "Update notes", value=report["notes"], key=f"admin_notes_{report['id']}", height=120
@@ -330,6 +361,20 @@ def admin_page():
             if st.button(f"Save notes #{report['id']}", key=f"save_notes_{report['id']}"):
                 report["notes"] = note_update
                 st.success("Notes updated.")
+                st.rerun()
+
+            st.subheader(f"Edit Classifications for Report #{report['id']}")
+            e_human = st.checkbox("Safe for humans", value=report.get("edible_human", False), key=f"edit_human_{report['id']}")
+            e_pet = st.checkbox("Safe for pets", value=report.get("edible_pet", False), key=f"edit_pet_{report['id']}")
+            e_animal = st.checkbox("Safe for other animals", value=report.get("edible_animal", False), key=f"edit_animal_{report['id']}")
+            e_compost = st.checkbox("Safe for composting", value=report.get("compost", False), key=f"edit_compost_{report['id']}")
+
+            if st.button(f"Save classifications #{report['id']}", key=f"save_class_{report['id']}"):
+                report["edible_human"] = e_human
+                report["edible_pet"] = e_pet
+                report["edible_animal"] = e_animal
+                report["compost"] = e_compost
+                st.success("Classifications updated.")
                 st.rerun()
 
 
@@ -385,14 +430,16 @@ def donor_page():
                 "quantity_kg": qty,
                 "reported_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "edible_human": bool(e_human),
-                "compost": bool(e_pet),
+                "edible_pet": bool(e_pet),
                 "edible_animal": bool(e_animal),
-                "compost": False,
+                "compost": bool(e_pet),
                 "notes": safety_notes,
                 "status": "Available",
                 "claimed_by": None,
                 "image_b64": st.session_state.get("tmp_image_b64"),
                 "ai_review": None,
+                "admin_approved": False,
+                "ai_verified": False,
             }
             st.session_state.reports.append(new_report)
             st.success("Report added successfully! Volunteers can now see and claim it.")
