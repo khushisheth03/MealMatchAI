@@ -19,8 +19,10 @@ except ImportError:
     TWILIO_AVAILABLE = False
 
 # Google Cloud Vision Configuration
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "graceful-goods-500005-s8-cfb0f75b4a16.json"
-client = vision.ImageAnnotatorClient()
+# Set via environment variable: export GOOGLE_APPLICATION_CREDENTIALS="graceful-goods-500005-s8-cfb0f75b4a16.json"
+GOOGLE_CREDENTIALS_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+GOOGLE_PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID", "graceful-goods-500005-s8")
+
 # WhatsApp/Twilio Configuration
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
@@ -74,26 +76,18 @@ def classify_image_with_ai(image_bytes):
             raise RuntimeError("Google Cloud Vision SDK not installed. Install with: pip install google-cloud-vision")
         
         if not GOOGLE_CREDENTIALS_PATH:
-            raise RuntimeError("GOOGLE_APPLICATION_CREDENTIALS environment variable not set")
+            raise RuntimeError("GOOGLE_APPLICATION_CREDENTIALS environment variable not set. Set it with: export GOOGLE_APPLICATION_CREDENTIALS='/path/to/your/service-account-key.json'")
         
-        # Initialize Vision API client
-        client = vision.ImageAnnotatorClient()
+        try:
+            # Initialize Vision API client (credentials from environment variable)
+            vision_client = vision.ImageAnnotatorClient()
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize Vision API client: {str(e)}. Make sure your credentials file exists at: {GOOGLE_CREDENTIALS_PATH}")
         
         # Create image object
         image = types.Image(content=image_bytes)
         
-        # Prepare requests for Vision API
-        requests = [
-            {
-                'image': image,
-                'features': [
-                    {'type_': vision.Feature.Type.LABEL_DETECTION, 'max_results': 20},
-                    {'type_': vision.Feature.Type.TEXT_DETECTION, 'max_results': 10},
-                    {'type_': vision.Feature.Type.SAFE_SEARCH_DETECTION},
-                ]
-            }
-        ]
-        
+        # Create annotation request
         batch_request = types.AnnotateImageRequest(
             image=image,
             features=[
@@ -103,7 +97,8 @@ def classify_image_with_ai(image_bytes):
             ]
         )
         
-        response = client.annotate_image(batch_request)
+        # Call Vision API
+        response = vision_client.annotate_image(batch_request)
         
         # Extract labels and safe search results
         labels = [label.description for label in response.label_annotations]
