@@ -237,6 +237,95 @@ def manual_review_result(reason):
     }
 
 
+def offline_food_review(description, reason):
+    """Fallback classifier for demos when Hugging Face cannot be reached."""
+    text = (description or "").lower()
+
+    compost_keywords = [
+        "rotten",
+        "spoiled",
+        "mold",
+        "mould",
+        "expired",
+        "scrap",
+        "peel",
+        "waste",
+        "stale",
+    ]
+    human_keywords = [
+        "fresh",
+        "bread",
+        "rice",
+        "fruit",
+        "vegetable",
+        "salad",
+        "pastry",
+        "baked",
+        "cooked",
+        "packed",
+        "sealed",
+    ]
+    animal_keywords = [
+        "plain",
+        "rice",
+        "unsalted",
+        "meat",
+        "vegetable",
+        "bread",
+    ]
+    animal_unsafe_keywords = [
+        "chocolate",
+        "onion",
+        "garlic",
+        "avocado",
+        "grape",
+        "xylitol",
+        "alcohol",
+    ]
+
+    labels = [
+        keyword
+        for keyword in human_keywords + animal_keywords + compost_keywords
+        if keyword in text
+    ]
+    labels = list(dict.fromkeys(labels)) or ["food item"]
+
+    compost = any(keyword in text for keyword in compost_keywords)
+    animal_unsafe = any(keyword in text for keyword in animal_unsafe_keywords)
+    edible_human = any(keyword in text for keyword in human_keywords) and not compost
+    edible_animal = (
+        any(keyword in text for keyword in animal_keywords)
+        and not animal_unsafe
+        and not compost
+    )
+
+    if compost:
+        category = "Compost Candidate"
+    elif edible_human:
+        category = "Human Food Candidate"
+    elif edible_animal:
+        category = "Animal Feed Candidate"
+    else:
+        category = "Admin Review Candidate"
+
+    return {
+        "category": category,
+        "labels": labels,
+        "predictions": [
+            {"label": label, "score": 0.55}
+            for label in labels[:5]
+        ],
+        "edible_human": edible_human,
+        "edible_animal": edible_animal,
+        "compost": compost,
+        "notes": (
+            "Offline safety review used because Hugging Face was unreachable. "
+            f"{reason} Admin must inspect the photo before approval."
+        ),
+        "source": "offline_fallback",
+    }
+
+
 def normalize_hf_predictions(payload):
     """Handle common Hugging Face response shapes for image classification."""
     if isinstance(payload, dict):
@@ -264,7 +353,7 @@ def normalize_hf_predictions(payload):
     raise RuntimeError("Hugging Face returned no usable image labels.")
 
 
-def classify_image_with_ai(image_bytes):
+def classify_image_with_ai(image_bytes, description=""):
     """Classify an image with Hugging Face Inference API."""
     try:
         try:
@@ -322,8 +411,9 @@ def classify_image_with_ai(image_bytes):
         st.error(f"Hugging Face API HTTP Error: {e}")
         return manual_review_result(f"Hugging Face API HTTP error: {e}")
     except requests.exceptions.RequestException as e:
-        st.error(f"Hugging Face API Connection Error: {e}")
-        return manual_review_result(f"Hugging Face API connection error: {e}")
+        reason = f"Hugging Face API connection error: {e}"
+        st.warning(reason)
+        return offline_food_review(description, reason)
     except Exception as e:
         st.error(f"Image Classification Failed: {e}")
         return manual_review_result(f"Image classification failed: {e}")
@@ -843,9 +933,15 @@ def donor_page():
             image_bytes = uploaded_file.getvalue()
             st.session_state.tmp_image_b64 = base64.b64encode(image_bytes).decode()
             with st.spinner("Analyzing image (AI)..."):
-                st.session_state.ai_result = classify_image_with_ai(image_bytes)
+                st.session_state.ai_result = classify_image_with_ai(image_bytes, waste_desc)
             if ai_verification_passed(st.session_state.ai_result):
-                st.success("Hugging Face AI classified the image. Please review the suggestions below.")
+                if st.session_state.ai_result.get("source") == "offline_fallback":
+                    st.warning(
+                        "Hugging Face could not be reached, so MealMatch used the "
+                        "offline safety review. Admin approval is still required."
+                    )
+                else:
+                    st.success("Hugging Face AI classified the image. Please review the suggestions below.")
             else:
                 st.error(
                     "Hugging Face AI did not classify this image. "
@@ -876,7 +972,7 @@ def donor_page():
         if not uploaded_file:
             st.error("Photo upload is required.")
         elif not ai_verification_passed(ai):
-            st.warning("Please analyze the uploaded photo with Hugging Face AI before submitting.")
+            st.warning("Please analyze the uploaded photo before submitting.")
         elif not verified:
             st.warning("Please verify the report before submitting.")
         else:
