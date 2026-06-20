@@ -1,4 +1,5 @@
 import base64
+import html
 import json
 import math
 import os
@@ -23,23 +24,63 @@ def apply_app_theme():
     st.markdown(
         """
         <style>
+        :root {
+            --meal-olive: #5f6f38;
+            --meal-olive-dark: #34451f;
+            --meal-olive-soft: #eef3e2;
+            --meal-orange: #e9822e;
+            --meal-orange-soft: #fff1e3;
+            --meal-ink: #26311c;
+        }
+        html, body, [data-testid="stAppViewContainer"] {
+            color: var(--meal-ink);
+        }
         .main .block-container {
             padding-top: 2rem;
             max-width: 1180px;
         }
+        h1, h2, h3 {
+            color: var(--meal-olive-dark);
+        }
+        [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, var(--meal-olive-soft), #ffffff);
+            border-right: 1px solid #d8dfc6;
+        }
         div[data-testid="stMetric"] {
-            background: #f7faf9;
-            border: 1px solid #dfe8e4;
+            background: var(--meal-olive-soft);
+            border: 1px solid #d8dfc6;
             border-radius: 8px;
             padding: 14px 16px;
         }
         div[data-testid="stExpander"] {
             border-radius: 8px;
-            border-color: #dfe8e4;
+            border-color: #d8dfc6;
         }
         .stButton > button {
             border-radius: 7px;
             font-weight: 600;
+            border-color: var(--meal-olive);
+            color: var(--meal-olive-dark);
+        }
+        .stButton > button:hover {
+            border-color: var(--meal-orange);
+            color: var(--meal-orange);
+        }
+        div[data-testid="stAlert"] {
+            border-radius: 8px;
+        }
+        .meal-chat-message {
+            background: #fffaf4;
+            border: 1px solid #f1c89f;
+            border-left: 4px solid var(--meal-orange);
+            border-radius: 8px;
+            padding: 10px 12px;
+            margin-bottom: 10px;
+        }
+        .meal-chat-meta {
+            color: #65714a;
+            font-size: 0.82rem;
+            margin-bottom: 4px;
         }
         </style>
         """,
@@ -107,18 +148,42 @@ def render_report_chat(report_id, default_message, key_prefix):
     if messages:
         st.write("Conversation")
         for message in messages:
-            st.caption(
+            safe_meta = html.escape(
                 f"{message['created_at']} - {message['sender']} ({message['role']})"
             )
-            st.write(message["message"])
+            safe_message = html.escape(message["message"])
+            st.markdown(
+                (
+                    "<div class='meal-chat-message'>"
+                    f"<div class='meal-chat-meta'>{safe_meta}</div>"
+                    f"<div>{safe_message}</div>"
+                    "</div>"
+                ),
+                unsafe_allow_html=True,
+            )
     else:
-        st.write("No messages yet.")
+        st.info("No messages yet. Start the coordination thread below.")
 
+    quick_messages = [
+        default_message,
+        "Pickup is confirmed. I will update the report if anything changes.",
+        "Can you share the best pickup time and contact person?",
+        "Food photo and details reviewed. Please wait for admin approval.",
+    ]
+    selected_quick_message = st.selectbox(
+        "Quick message",
+        quick_messages,
+        key=f"{key_prefix}_quick_chat_{report_id}",
+    )
+    text_key = f"{key_prefix}_chat_text_{report_id}"
+    if text_key not in st.session_state:
+        st.session_state[text_key] = default_message
+    if st.button("Use template", key=f"{key_prefix}_use_template_{report_id}"):
+        st.session_state[text_key] = selected_quick_message
     new_message = st.text_area(
         "Message",
-        value=default_message,
         height=100,
-        key=f"{key_prefix}_chat_text_{report_id}",
+        key=text_key,
     )
     col_send, col_cancel = st.columns(2)
     with col_send:
@@ -162,7 +227,6 @@ def get_visible_chat_reports():
             if report.get("claimed_by") == name
             or (
                 report.get("admin_approved")
-                and report.get("ai_verified")
                 and report.get("status") == "Available"
             )
         ]
@@ -383,6 +447,27 @@ def offline_food_review(description, reason):
         ),
         "source": "offline_fallback",
     }
+
+
+def generate_pickup_brief(description, quantity_kg, area):
+    text = (description or "").lower()
+    if any(word in text for word in ["rotten", "spoiled", "mold", "mould", "scrap", "peel"]):
+        route = "Compost partner"
+        checks = "Seal separately, avoid leaking bags, and keep away from edible donations."
+    elif any(word in text for word in ["chocolate", "onion", "garlic", "grape", "xylitol"]):
+        route = "Human shelter review"
+        checks = "Not suitable for animals. Admin should check ingredients and freshness."
+    elif any(word in text for word in ["plain", "unsalted", "rice", "meat"]):
+        route = "Animal shelter or human shelter review"
+        checks = "Confirm freshness, temperature, and no unsafe seasoning."
+    else:
+        route = "Human shelter review"
+        checks = "Confirm packaging, smell, visible spoilage, and best-by timing."
+
+    return (
+        f"Suggested route: {route}. Quantity: {quantity_kg} kg. "
+        f"Pickup area: {area}. Admin checks: {checks}"
+    )
 
 
 def normalize_hf_predictions(payload):
@@ -693,7 +778,7 @@ def volunteer_page():
 
     df = pd.DataFrame(st.session_state.reports)
 
-    df = df[(df["admin_approved"] == True) & (df["ai_verified"] == True)]
+    df = df[df["admin_approved"] == True]
     if show_available:
         df = df[df["status"] == "Available"]
 
@@ -840,6 +925,9 @@ def admin_page():
     render_hf_troubleshooting()
 
     report_df = pd.DataFrame(st.session_state.reports)
+    report_df["ai_assistance"] = report_df["ai_verified"].apply(
+        lambda value: "Used" if value else "Optional / skipped"
+    )
     pending_count = int((report_df["status"] == "Pending Admin Approval").sum())
     available_count = int((report_df["status"] == "Available").sum())
     claimed_count = int((report_df["status"] == "Claimed").sum())
@@ -859,7 +947,7 @@ def admin_page():
                 "status",
                 "claimed_by",
                 "admin_approved",
-                "ai_verified",
+                "ai_assistance",
             ]
         ]
     )
@@ -873,7 +961,7 @@ def admin_page():
             st.write(f"**Status:** {report['status']}")
             st.write(f"**Claimed By:** {report.get('claimed_by') or 'None'}")
             st.write(f"**Admin Approved:** {'Yes' if report.get('admin_approved') else 'No'}")
-            st.write(f"**AI Verified:** {'Yes' if report.get('ai_verified') else 'No'}")
+            st.write(f"**AI Assistance:** {'Used' if report.get('ai_verified') else 'Not used / optional'}")
             st.write(
                 "Humans: "
                 + ("Yes" if report["edible_human"] else "No")
@@ -899,44 +987,43 @@ def admin_page():
                     f"Mark Available #{report['id']}",
                     key=f"admin_avail_{report['id']}",
                 ):
-                    if report.get("image_b64") and report.get("ai_verified") and report.get("admin_approved"):
+                    if report.get("image_b64") and report.get("admin_approved"):
                         report["status"] = "Available"
                         report["claimed_by"] = None
                         st.success("Report marked available.")
                         st.rerun()
                     else:
-                        st.warning("Only AI-verified and admin-approved image uploads can be marked available.")
+                        st.warning("Only image uploads approved by admin can be marked available.")
 
             with col2:
                 if st.button(
                     f"Mark Claimed #{report['id']}",
                     key=f"admin_claimed_{report['id']}",
                 ):
-                    if report.get("image_b64") and report.get("ai_verified") and report.get("admin_approved"):
+                    if report.get("image_b64") and report.get("admin_approved"):
                         report["status"] = "Claimed"
                         if not report.get("claimed_by"):
                             report["claimed_by"] = "Admin assigned"
                         st.success("Report marked claimed.")
                         st.rerun()
                     else:
-                        st.warning("Only AI-verified and admin-approved image uploads can be marked claimed.")
+                        st.warning("Only image uploads approved by admin can be marked claimed.")
 
             with col3:
                 if st.button(f"Approve uploaded image #{report['id']}", key=f"approve_{report['id']}"):
                     if not report.get("image_b64"):
                         st.error("Upload image is missing, so this report cannot be approved.")
-                    elif not report.get("ai_verified"):
-                        st.error("Hugging Face AI must classify the image before admin approval.")
                     else:
                         report["admin_approved"] = True
                         report["status"] = "Available"
                         st.success("Uploaded image approved and published for volunteers.")
                         st.rerun()
 
-            if report.get("image_b64") and report.get("ai_verified") and not report.get("admin_approved"):
-                st.info("AI verification complete. Please inspect the uploaded image before approving.")
-            elif report.get("image_b64") and not report.get("ai_verified"):
-                st.warning("Waiting for Hugging Face AI classification before admin approval.")
+            if report.get("image_b64") and not report.get("admin_approved"):
+                if report.get("ai_verified"):
+                    st.info("AI assistance is available. Please inspect the uploaded image before approving.")
+                else:
+                    st.info("AI was skipped or unavailable. Admin can still inspect the photo and approve.")
             elif report.get("admin_approved"):
                 st.success("Admin approval complete.")
 
@@ -988,7 +1075,7 @@ def donor_page():
     st.title("Restaurant / Donor Reporting")
     st.caption(
         "Upload surplus pictures and provide quantity and safety details. "
-        "MealMatch classifies the food route before admin approval."
+        "AI suggestions are optional; admin approval is required before publishing."
     )
     render_message_center("donor")
     render_hf_troubleshooting()
@@ -1013,10 +1100,14 @@ def donor_page():
         key="donor_desc",
     )
     qty = st.number_input("Quantity (kg)", min_value=1, value=5, key="donor_qty")
+    pickup_brief = generate_pickup_brief(waste_desc, qty, r_city)
+    with st.expander("Smart Pickup Brief", expanded=False):
+        st.write(pickup_brief)
     
     if uploaded_file:
         st.image(uploaded_file, caption="Uploaded photo", use_container_width=True)
-        if st.button("Analyze Photo with AI", key="donor_analyze"):
+        st.caption("Optional: use AI to suggest a route, or submit directly for admin review.")
+        if st.button("Analyze with AI (optional)", key="donor_analyze"):
             image_bytes = uploaded_file.getvalue()
             st.session_state.tmp_image_b64 = base64.b64encode(image_bytes).decode()
             with st.spinner("Analyzing image (AI)..."):
@@ -1038,9 +1129,11 @@ def donor_page():
         st.error("Photo upload is required.")
 
     ai = st.session_state.get("ai_result")
-    st.subheader("Suggested Classification")
+    st.subheader("Routing Review")
     if ai:
         st.caption(f"Review source: {ai.get('source', 'huggingface_api')}")
+    else:
+        st.caption("No AI suggestion yet. Admin can still review and approve this report.")
     suggested_human = ai.get("edible_human") if ai else True
     suggested_compost = ai.get("compost") if ai else False
     suggested_animal = ai.get("edible_animal") if ai else False
@@ -1049,7 +1142,7 @@ def donor_page():
     e_animal = st.checkbox("Safe for animals", value=suggested_animal, key="donor_animal")
     e_compost = st.checkbox("Safe for composting", value=suggested_compost, key="donor_compost")
 
-    safety_notes_default = ai.get("notes") if ai else "Please verify the food condition and ingredients."
+    safety_notes_default = ai.get("notes") if ai else pickup_brief
     safety_notes = st.text_area(
         "Safety notes / reasons for classification",
         safety_notes_default,
@@ -1060,8 +1153,6 @@ def donor_page():
     if st.button("Submit Report", key="donor_submit"):
         if not uploaded_file:
             st.error("Photo upload is required.")
-        elif not ai_verification_passed(ai):
-            st.warning("Please analyze the uploaded photo before submitting.")
         elif not verified:
             st.warning("Please verify the report before submitting.")
         else:
@@ -1090,7 +1181,7 @@ def donor_page():
                 "image_b64": st.session_state.get("tmp_image_b64"),
                 "ai_review": json.dumps(ai, indent=2) if ai else None,
                 "admin_approved": False,
-                "ai_verified": True,
+                "ai_verified": ai_verification_passed(ai),
             }
             st.session_state.reports.append(new_report)
             add_chat_message(
