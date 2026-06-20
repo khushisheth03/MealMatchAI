@@ -11,7 +11,7 @@ try:
     from google.cloud import vision
 except ImportError:
     vision = None
-
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = r"C:\Users\khush\Downloads\graceful-goods-500005-s8-cfb0f75b4a16.json"
 
 ADMIN_WHATSAPP_NUMBER = os.getenv("ADMIN_WHATSAPP_NUMBER", "whatsapp:+1234567890")
 
