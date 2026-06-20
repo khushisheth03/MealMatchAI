@@ -7,11 +7,15 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
+GOOGLE_VISION_KEY_PATH = r"C:\Users\khush\Downloads\graceful-goods-500005-s8-cfb0f75b4a16.json"
+if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS") and os.path.exists(GOOGLE_VISION_KEY_PATH):
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = GOOGLE_VISION_KEY_PATH
+
 try:
     from google.cloud import vision
 except ImportError:
     vision = None
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = r"C:\Users\khush\Downloads\graceful-goods-500005-s8-cfb0f75b4a16.json"
+
 
 ADMIN_WHATSAPP_NUMBER = os.getenv("ADMIN_WHATSAPP_NUMBER", "whatsapp:+1234567890")
 
@@ -759,7 +763,10 @@ def donor_page():
             if ai_verification_passed(st.session_state.ai_result):
                 st.success("Google Vision AI verified the image. Please review the classifications below.")
             else:
-                st.error("Google Vision AI did not verify this image. Configure Google Vision or try another image.")
+                st.error(
+                    "Google Vision AI did not verify this image. "
+                    f"Reason: {st.session_state.ai_result.get('notes')}"
+                )
     else:
         st.error("Photo upload is required.")
 
