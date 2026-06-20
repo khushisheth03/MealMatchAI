@@ -23,10 +23,16 @@ def get_vision_client():
     if not vision:
         raise RuntimeError("Google Vision is not installed. Add google-cloud-vision to requirements.txt.")
 
+    if service_account and "gcp_service_account_json" in st.secrets:
+        service_account_info = json.loads(st.secrets["gcp_service_account_json"])
+        credentials = service_account.Credentials.from_service_account_info(service_account_info)
+        return vision.ImageAnnotatorClient(credentials=credentials)
+
     if service_account and "gcp_service_account" in st.secrets:
-        credentials = service_account.Credentials.from_service_account_info(
-            dict(st.secrets["gcp_service_account"])
-        )
+        service_account_info = dict(st.secrets["gcp_service_account"])
+        if "private_key" in service_account_info:
+            service_account_info["private_key"] = service_account_info["private_key"].replace("\\n", "\n")
+        credentials = service_account.Credentials.from_service_account_info(service_account_info)
         return vision.ImageAnnotatorClient(credentials=credentials)
 
     return vision.ImageAnnotatorClient()
