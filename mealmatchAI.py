@@ -5,39 +5,10 @@ import os
 from datetime import datetime
 
 import pandas as pd
+import requests
 import streamlit as st
 
-try:
-    from google.cloud import vision
-    from google.oauth2 import service_account
-except ImportError:
-    vision = None
-    service_account = None
-
-
-ADMIN_WHATSAPP_NUMBER = os.getenv("ADMIN_WHATSAPP_NUMBER", "whatsapp:+1234567890")
-
-
-def get_vision_client():
-    """Create a Google Vision client from Streamlit Cloud secrets or local credentials."""
-    if not vision:
-        raise RuntimeError("Google Vision is not installed. Add google-cloud-vision to requirements.txt.")
-
-    if service_account and "gcp_service_account_json" in st.secrets:
-        service_account_info = json.loads(st.secrets["gcp_service_account_json"])
-        if "private_key" in service_account_info:
-            service_account_info["private_key"] = service_account_info["private_key"].replace("\\n", "\n")
-        credentials = service_account.Credentials.from_service_account_info(service_account_info)
-        return vision.ImageAnnotatorClient(credentials=credentials)
-
-    if service_account and "gcp_service_account" in st.secrets:
-        service_account_info = dict(st.secrets["gcp_service_account"])
-        if "private_key" in service_account_info:
-            service_account_info["private_key"] = service_account_info["private_key"].replace("\\n", "\n")
-        credentials = service_account.Credentials.from_service_account_info(service_account_info)
-        return vision.ImageAnnotatorClient(credentials=credentials)
-
-    return vision.ImageAnnotatorClient()
+HF_MODEL = os.getenv("HF_MODEL", "nateraw/food")
 
 
 def calculate_distance(lat1, lon1, lat2, lon2):
@@ -55,29 +26,63 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     return radius_km * c
 
 
-def send_whatsapp_message(to_number, message):
-    """Send WhatsApp message with Twilio when configured; otherwise use demo mode."""
-    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
-    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
-    from_number = os.getenv("TWILIO_WHATSAPP_FROM")
-
-    if not account_sid or not auth_token or not from_number:
-        return {
-            "status": "demo",
-            "message": "Twilio is not configured, so no real WhatsApp message was sent.",
+def add_chat_message(report_id, sender, role, message):
+    st.session_state.chat_messages.append(
+        {
+            "report_id": report_id,
+            "sender": sender,
+            "role": role,
+            "message": message,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         }
-
-    try:
-        from twilio.rest import Client
-
-        client = Client(account_sid, auth_token)
-        sent = client.messages.create(body=message, from_=from_number, to=to_number)
-        return {"status": "sent", "sid": sent.sid}
-    except Exception as exc:
-        return {"status": "error", "message": str(exc)}
+    )
 
 
-def analyze_food_safety_human(labels, safe_search):
+def render_report_chat(report_id, default_message, key_prefix):
+    messages = [
+        message
+        for message in st.session_state.chat_messages
+        if message["report_id"] == report_id
+    ]
+
+    if messages:
+        st.write("Conversation")
+        for message in messages:
+            st.caption(
+                f"{message['created_at']} - {message['sender']} ({message['role']})"
+            )
+            st.write(message["message"])
+    else:
+        st.write("No messages yet.")
+
+    new_message = st.text_area(
+        "Message",
+        value=default_message,
+        height=100,
+        key=f"{key_prefix}_chat_text_{report_id}",
+    )
+    col_send, col_cancel = st.columns(2)
+    with col_send:
+        if st.button("Send", key=f"{key_prefix}_send_chat_{report_id}", use_container_width=True):
+            if not new_message.strip():
+                st.error("Please write a message first.")
+            else:
+                add_chat_message(
+                    report_id,
+                    st.session_state.user_name,
+                    st.session_state.user_role,
+                    new_message.strip(),
+                )
+                st.success("Message added to the report chat.")
+                st.session_state.active_message_form = None
+                st.rerun()
+    with col_cancel:
+        if st.button("Cancel", key=f"{key_prefix}_cancel_chat_{report_id}", use_container_width=True):
+            st.session_state.active_message_form = None
+            st.rerun()
+
+
+def analyze_food_safety_human(labels):
     """Determine if food is safe for human consumption."""
     unsafe_keywords = [
         "mold",
@@ -104,14 +109,6 @@ def analyze_food_safety_human(labels, safe_search):
 
     for keyword in unsafe_keywords:
         if keyword in label_lower:
-            return False
-
-    if vision and safe_search:
-        adult_likelihood = safe_search.adult
-        if adult_likelihood in (
-            vision.Likelihood.LIKELY,
-            vision.Likelihood.VERY_LIKELY,
-        ):
             return False
 
     for keyword in safe_keywords:
@@ -154,48 +151,53 @@ def analyze_compost_safety(labels):
     return True
 
 
-def generate_food_notes(labels, safe_search):
+def generate_food_notes(labels, predictions):
     """Generate descriptive notes about the food."""
     if not labels:
         return "Unable to identify food items in the image."
 
     notes = f"Detected: {', '.join(labels[:5])}. "
 
-    if vision and safe_search and safe_search.adult == vision.Likelihood.POSSIBLE:
-        notes += "Contains potentially unsafe content. "
+    if predictions:
+        top = predictions[0]
+        score = top.get("score", 0) * 100
+        notes += f"Top model confidence: {score:.1f}%. "
 
-    notes += "Please verify classifications manually if unsure."
+    notes += "Hugging Face results are suggestions; admin should still inspect the photo."
     return notes
 
 
 def classify_image_with_ai(image_bytes):
-    """Classify image with Google Vision if available; otherwise return a manual-review fallback."""
-    if not vision:
-        return {
-            "category": "Manual Review",
-            "labels": [],
-            "edible_human": True,
-            "edible_animal": False,
-            "compost": False,
-            "notes": "Google Vision is not installed. Please verify classifications manually.",
-        }
-
+    """Classify an image with Hugging Face Inference API."""
     try:
-        client = get_vision_client()
-        image = vision.Image(content=image_bytes)
-        label_response = client.label_detection(image=image)
-        safe_response = client.safe_search_detection(image=image)
+        token = st.secrets.get("HF_TOKEN", os.getenv("HF_TOKEN", ""))
+        headers = {"Content-Type": "application/octet-stream"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
 
-        labels = [label.description for label in label_response.label_annotations]
-        safe_search = safe_response.safe_search_annotation
+        response = requests.post(
+            f"https://api-inference.huggingface.co/models/{HF_MODEL}",
+            headers=headers,
+            data=image_bytes,
+            timeout=60,
+        )
+        response.raise_for_status()
+        predictions = response.json()
+        if isinstance(predictions, dict) and predictions.get("error"):
+            raise RuntimeError(predictions["error"])
+        if not isinstance(predictions, list) or not predictions:
+            raise RuntimeError("Hugging Face returned no image labels.")
+
+        labels = [item.get("label", "") for item in predictions if item.get("label")]
 
         return {
             "category": labels[0] if labels else "Unknown",
             "labels": labels,
-            "edible_human": analyze_food_safety_human(labels, safe_search),
+            "predictions": predictions[:5],
+            "edible_human": analyze_food_safety_human(labels),
             "edible_animal": analyze_food_safety_animal(labels),
             "compost": analyze_compost_safety(labels),
-            "notes": generate_food_notes(labels, safe_search),
+            "notes": generate_food_notes(labels, predictions),
         }
     except Exception as exc:
         return {
@@ -209,7 +211,7 @@ def classify_image_with_ai(image_bytes):
 
 
 def ai_verification_passed(ai_result):
-    """Return True only when Google Vision returned a real classification."""
+    """Return True only when the model returned a real classification."""
     if not ai_result:
         return False
     return ai_result.get("category") != "Manual Review" and bool(ai_result.get("labels"))
@@ -326,6 +328,7 @@ def initialize_state():
         "message_form_type": None,
         "message_phone": "",
         "message_text": "",
+        "chat_messages": [],
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -486,44 +489,15 @@ def volunteer_page():
 
 def render_volunteer_message_form(row):
     st.divider()
-    st.subheader("Send WhatsApp Message to Donor")
-
-    contact_phone = st.text_input(
-        "Your WhatsApp number",
-        placeholder="whatsapp:+1234567890",
-        key=f"vol_phone_{row['id']}",
-    )
-    msg_text = st.text_area(
-        "Your message",
-        value=(
-            f"Hi, I'm interested in claiming the pickup from {row['restaurant']}. "
-            "Can I contact you about pickup details?"
+    st.subheader("Report Chat")
+    render_report_chat(
+        row["id"],
+        (
+            f"Hi, I'm interested in the pickup from {row['restaurant']}. "
+            "Can we coordinate pickup details here?"
         ),
-        height=100,
-        key=f"vol_text_{row['id']}",
+        "volunteer",
     )
-
-    col_send, col_cancel = st.columns(2)
-    with col_send:
-        if st.button("Send Message", key=f"send_vol_{row['id']}", use_container_width=True):
-            if not contact_phone:
-                st.error("Please enter your WhatsApp number")
-            else:
-                admin_msg = (
-                    f"Volunteer Inquiry\n\n"
-                    f"{st.session_state.user_name}\n"
-                    f"{contact_phone}\n\n"
-                    f"{row['restaurant']}\n"
-                    f"Report #{row['id']}\n\n"
-                    f"Message:\n{msg_text}"
-                )
-                result = send_whatsapp_message(ADMIN_WHATSAPP_NUMBER, admin_msg)
-                handle_message_result(result, "Message sent to admin!")
-
-    with col_cancel:
-        if st.button("Cancel", key=f"cancel_vol_{row['id']}", use_container_width=True):
-            st.session_state.active_message_form = None
-            st.rerun()
 
 
 def render_my_claims():
@@ -557,56 +531,16 @@ def render_my_claims():
 
         if st.session_state.get("active_message_form") == f"claimed_{claim['id']}":
             st.divider()
-            st.subheader("Send Message to Donor")
-            donor_msg = st.text_area(
-                "Your message",
-                value=(
+            st.subheader("Report Chat")
+            render_report_chat(
+                claim["id"],
+                (
                     f"Hi, I'm here for the pickup of {claim['waste_description']}. "
                     "When is convenient for pickup?"
                 ),
-                height=100,
-                key=f"claimed_text_{claim['id']}",
+                "claimed",
             )
-
-            col_d1, col_d2 = st.columns(2)
-            with col_d1:
-                if st.button(
-                    "Send to Admin",
-                    key=f"send_claimed_{claim['id']}",
-                    use_container_width=True,
-                ):
-                    admin_msg = (
-                        f"Pickup Ready\n\n"
-                        f"{st.session_state.user_name} is ready for pickup.\n\n"
-                        f"{claim['restaurant']}\n"
-                        f"Report #{claim['id']}\n\n"
-                        f"Message:\n{donor_msg}"
-                    )
-                    result = send_whatsapp_message(ADMIN_WHATSAPP_NUMBER, admin_msg)
-                    handle_message_result(result, "Message sent to admin to relay to donor!")
-
-            with col_d2:
-                if st.button(
-                    "Cancel",
-                    key=f"cancel_claimed_{claim['id']}",
-                    use_container_width=True,
-                ):
-                    st.session_state.active_message_form = None
-                    st.rerun()
             st.divider()
-
-
-def handle_message_result(result, success_message):
-    if result["status"] == "sent":
-        st.success(success_message)
-        st.session_state.active_message_form = None
-        st.rerun()
-    elif result["status"] == "demo":
-        st.info(f"Demo Mode: {result.get('message')}")
-        st.session_state.active_message_form = None
-        st.rerun()
-    else:
-        st.error(f"Failed: {result.get('message')}")
 
 
 def admin_page():
@@ -615,7 +549,7 @@ def admin_page():
 
     st.markdown("### Approval Workflow")
     st.markdown("1. Restaurant uploads a food photo and details")
-    st.markdown("2. Google Vision AI verifies the uploaded image")
+    st.markdown("2. Hugging Face AI suggests image labels")
     st.markdown("3. Admin reviews the image and AI result")
     st.markdown("4. Admin approval publishes it for volunteers")
 
@@ -698,7 +632,7 @@ def admin_page():
                     if not report.get("image_b64"):
                         st.error("Upload image is missing, so this report cannot be approved.")
                     elif not report.get("ai_verified"):
-                        st.error("Google Vision AI must verify the image before admin approval.")
+                        st.error("Hugging Face AI must classify the image before admin approval.")
                     else:
                         report["admin_approved"] = True
                         report["status"] = "Available"
@@ -708,9 +642,16 @@ def admin_page():
             if report.get("image_b64") and report.get("ai_verified") and not report.get("admin_approved"):
                 st.info("AI verification complete. Please inspect the uploaded image before approving.")
             elif report.get("image_b64") and not report.get("ai_verified"):
-                st.warning("Waiting for Google Vision AI verification before admin approval.")
+                st.warning("Waiting for Hugging Face AI classification before admin approval.")
             elif report.get("admin_approved"):
                 st.success("Admin approval complete.")
+
+            with st.expander("Report Chat"):
+                render_report_chat(
+                    report["id"],
+                    f"Admin note for report #{report['id']}:",
+                    "admin",
+                )
 
             note_update = st.text_area(
                 "Update notes",
@@ -752,7 +693,7 @@ def donor_page():
     st.title("Restaurant / Donor Reporting")
     st.info(
         "Upload surplus pictures and provide quantity and safety details. "
-        "Google Vision verifies the image before it goes to admin approval."
+        "Hugging Face AI classifies the image before it goes to admin approval."
     )
 
     uploaded_file = st.file_uploader(
@@ -781,10 +722,10 @@ def donor_page():
             with st.spinner("Analyzing image (AI)..."):
                 st.session_state.ai_result = classify_image_with_ai(image_bytes)
             if ai_verification_passed(st.session_state.ai_result):
-                st.success("Google Vision AI verified the image. Please review the classifications below.")
+                st.success("Hugging Face AI classified the image. Please review the suggestions below.")
             else:
                 st.error(
-                    "Google Vision AI did not verify this image. "
+                    "Hugging Face AI did not classify this image. "
                     f"Reason: {st.session_state.ai_result.get('notes')}"
                 )
     else:
@@ -812,7 +753,7 @@ def donor_page():
         if not uploaded_file:
             st.error("Photo upload is required.")
         elif not ai_verification_passed(ai):
-            st.warning("Please analyze the uploaded photo with Google Vision AI before submitting.")
+            st.warning("Please analyze the uploaded photo with Hugging Face AI before submitting.")
         elif not verified:
             st.warning("Please verify the report before submitting.")
         else:
@@ -844,31 +785,13 @@ def donor_page():
                 "ai_verified": True,
             }
             st.session_state.reports.append(new_report)
-
-            msg = f"""
-APPROVAL REQUIRED
-
-Report ID: {new_id}
-
-Restaurant:
-{r_name}
-
-Category:
-{ai['category'] if ai else 'Unknown'}
-
-Quantity:
-{qty} kg
-
-Please review and approve.
-"""
-            result = send_whatsapp_message(ADMIN_WHATSAPP_NUMBER, msg)
-            if result["status"] == "error":
-                st.warning(
-                    "Report submitted but WhatsApp notification failed: "
-                    f"{result.get('message', 'Unknown error')}"
-                )
-            else:
-                st.success("Report added successfully! Admin & volunteers notified.")
+            add_chat_message(
+                new_id,
+                r_name,
+                "Restaurant / Donor",
+                "New report submitted for admin approval.",
+            )
+            st.success("Report added successfully! Admin can review it in the dashboard.")
             st.balloons()
             st.session_state.tmp_image_b64 = None
             st.session_state.ai_result = None
@@ -895,13 +818,17 @@ Please review and approve.
                     f"Contact volunteer for report #{report['id']}",
                     key=f"donor_contact_{report['id']}",
                 ):
-                    msg = (
-                        f"Restaurant Contact Request\n\n"
-                        f"{r_name} wants to contact {report['claimed_by']} "
-                        f"about report #{report['id']}."
-                    )
-                    result = send_whatsapp_message(ADMIN_WHATSAPP_NUMBER, msg)
-                    handle_message_result(result, "Contact request sent to admin.")
+                    st.session_state.active_message_form = f"donor_{report['id']}"
+                    st.rerun()
+            if st.session_state.get("active_message_form") == f"donor_{report['id']}":
+                render_report_chat(
+                    report["id"],
+                    (
+                        f"Hi {report.get('claimed_by')}, this is {r_name}. "
+                        "Let's coordinate this pickup."
+                    ),
+                    "donor",
+                )
 
 
 def main():
