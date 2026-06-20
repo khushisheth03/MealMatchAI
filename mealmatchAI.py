@@ -184,6 +184,13 @@ def classify_image_with_ai(image_bytes):
         }
 
 
+def ai_verification_passed(ai_result):
+    """Return True only when Google Vision returned a real classification."""
+    if not ai_result:
+        return False
+    return ai_result.get("category") != "Manual Review" and bool(ai_result.get("labels"))
+
+
 def initialize_state():
     if "current_page" not in st.session_state:
         st.session_state.current_page = "dashboard"
@@ -207,13 +214,13 @@ def initialize_state():
                 "edible_animal": True,
                 "compost": False,
                 "notes": "All within best-by date, no spoilage. Excellent for food banks.",
-                "status": "Available",
+                "status": "Pending Image Upload",
                 "claimed_by": None,
                 "claimed_by_phone": None,
                 "image_b64": None,
                 "ai_review": None,
-                "admin_approved": True,
-                "ai_verified": True,
+                "admin_approved": False,
+                "ai_verified": False,
             },
             {
                 "id": 2,
@@ -229,13 +236,13 @@ def initialize_state():
                 "edible_animal": False,
                 "compost": True,
                 "notes": "Good for composting",
-                "status": "Available",
+                "status": "Pending Image Upload",
                 "claimed_by": "ABC SHELTER VOLUNTEER",
                 "claimed_by_phone": None,
                 "image_b64": None,
                 "ai_review": None,
-                "admin_approved": True,
-                "ai_verified": True,
+                "admin_approved": False,
+                "ai_verified": False,
             },
             {
                 "id": 3,
@@ -251,13 +258,13 @@ def initialize_state():
                 "edible_animal": True,
                 "compost": False,
                 "notes": "Meat may be spoiled for humans. Safe for pets after inspection.",
-                "status": "Available",
+                "status": "Pending Image Upload",
                 "claimed_by": None,
                 "claimed_by_phone": None,
                 "image_b64": None,
                 "ai_review": None,
-                "admin_approved": True,
-                "ai_verified": True,
+                "admin_approved": False,
+                "ai_verified": False,
             },
             {
                 "id": 4,
@@ -273,13 +280,13 @@ def initialize_state():
                 "edible_animal": False,
                 "compost": False,
                 "notes": "Human-safe. Contains chocolate & xylitol - NOT safe for animals.",
-                "status": "Claimed",
+                "status": "Pending Image Upload",
                 "claimed_by": "Local Shelter Volunteer",
                 "claimed_by_phone": None,
                 "image_b64": None,
                 "ai_review": None,
-                "admin_approved": True,
-                "ai_verified": True,
+                "admin_approved": False,
+                "ai_verified": False,
             },
         ]
 
@@ -580,13 +587,13 @@ def handle_message_result(result, success_message):
 
 def admin_page():
     st.title("Admin Dashboard")
-    st.info("Review reports, approve images, verify AI classifications, and update statuses.")
+    st.info("Review AI-verified uploads, inspect the food image, and approve it for volunteers.")
 
     st.markdown("### Approval Workflow")
-    st.markdown("1. Donor submits food report with photo")
-    st.markdown("2. Admin approves image")
-    st.markdown("3. Admin runs AI verification")
-    st.markdown("4. Report is ready for volunteers to claim")
+    st.markdown("1. Restaurant uploads a food photo and details")
+    st.markdown("2. Google Vision AI verifies the uploaded image")
+    st.markdown("3. Admin reviews the image and AI result")
+    st.markdown("4. Admin approval publishes it for volunteers")
 
     report_df = pd.DataFrame(st.session_state.reports)
     st.markdown("### Current Reports")
@@ -629,9 +636,10 @@ def admin_page():
                 st.write(f"**AI review:** {report['ai_review']}")
 
             if report.get("image_b64"):
+                st.subheader("Uploaded Food Image")
                 st.image(base64.b64decode(report["image_b64"]), width=400)
             else:
-                st.write("*No image uploaded for this report.*")
+                st.error("No image uploaded for this report. It cannot be approved.")
 
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -639,60 +647,46 @@ def admin_page():
                     f"Mark Available #{report['id']}",
                     key=f"admin_avail_{report['id']}",
                 ):
-                    report["status"] = "Available"
-                    report["claimed_by"] = None
-                    st.success("Report marked available.")
-                    st.rerun()
+                    if report.get("image_b64") and report.get("ai_verified") and report.get("admin_approved"):
+                        report["status"] = "Available"
+                        report["claimed_by"] = None
+                        st.success("Report marked available.")
+                        st.rerun()
+                    else:
+                        st.warning("Only AI-verified and admin-approved image uploads can be marked available.")
 
             with col2:
                 if st.button(
                     f"Mark Claimed #{report['id']}",
                     key=f"admin_claimed_{report['id']}",
                 ):
-                    report["status"] = "Claimed"
-                    if not report.get("claimed_by"):
-                        report["claimed_by"] = "Admin assigned"
-                    st.success("Report marked claimed.")
-                    st.rerun()
+                    if report.get("image_b64") and report.get("ai_verified") and report.get("admin_approved"):
+                        report["status"] = "Claimed"
+                        if not report.get("claimed_by"):
+                            report["claimed_by"] = "Admin assigned"
+                        st.success("Report marked claimed.")
+                        st.rerun()
+                    else:
+                        st.warning("Only AI-verified and admin-approved image uploads can be marked claimed.")
 
             with col3:
-                if st.button(f"Approve #{report['id']}", key=f"approve_{report['id']}"):
-                    report["admin_approved"] = True
-                    report["status"] = "Available"
-                    st.success("Approved and published.")
-                    st.rerun()
-
-            if report.get("image_b64") and report.get("admin_approved") and not report.get("ai_verified"):
-                if st.button(f"AI verify image #{report['id']}", key=f"ai_verify_{report['id']}"):
-                    image_bytes = base64.b64decode(report["image_b64"])
-                    with st.spinner("Running AI verification..."):
-                        ai_result = classify_image_with_ai(image_bytes)
-                    report["edible_human"] = bool(ai_result.get("edible_human"))
-                    report["edible_animal"] = bool(ai_result.get("edible_animal"))
-                    report["compost"] = bool(ai_result.get("compost"))
-                    report["notes"] = ai_result.get("notes", report["notes"])
-                    report["ai_review"] = json.dumps(ai_result, indent=2)
-                    report["ai_verified"] = True
-                    msg = (
-                        f"AI Verification Complete\n\n"
-                        f"Report #{report['id']} - {report['restaurant']}\n\n"
-                        f"Humans: {'Yes' if ai_result.get('edible_human') else 'No'}\n"
-                        f"Animals: {'Yes' if ai_result.get('edible_animal') else 'No'}\n"
-                        f"Compost: {'Yes' if ai_result.get('compost') else 'No'}"
-                    )
-                    result = send_whatsapp_message(ADMIN_WHATSAPP_NUMBER, msg)
-                    if result["status"] == "error":
-                        st.warning(
-                            "AI verification completed but WhatsApp notification failed: "
-                            f"{result.get('message', 'Unknown error')}"
-                        )
+                if st.button(f"Approve uploaded image #{report['id']}", key=f"approve_{report['id']}"):
+                    if not report.get("image_b64"):
+                        st.error("Upload image is missing, so this report cannot be approved.")
+                    elif not report.get("ai_verified"):
+                        st.error("Google Vision AI must verify the image before admin approval.")
                     else:
-                        st.success("AI verification completed. Admin notified.")
-                    st.rerun()
-            elif report.get("image_b64") and not report.get("admin_approved"):
-                st.warning("Approve this report first before AI verification.")
-            elif report.get("ai_verified"):
-                st.info("AI verification already completed for this report.")
+                        report["admin_approved"] = True
+                        report["status"] = "Available"
+                        st.success("Uploaded image approved and published for volunteers.")
+                        st.rerun()
+
+            if report.get("image_b64") and report.get("ai_verified") and not report.get("admin_approved"):
+                st.info("AI verification complete. Please inspect the uploaded image before approving.")
+            elif report.get("image_b64") and not report.get("ai_verified"):
+                st.warning("Waiting for Google Vision AI verification before admin approval.")
+            elif report.get("admin_approved"):
+                st.success("Admin approval complete.")
 
             note_update = st.text_area(
                 "Update notes",
@@ -733,8 +727,8 @@ def admin_page():
 def donor_page():
     st.title("Restaurant / Donor Reporting")
     st.info(
-        "Upload surplus pictures and provide quantity and safety details for volunteers. "
-        "Admin will verify classifications."
+        "Upload surplus pictures and provide quantity and safety details. "
+        "Google Vision verifies the image before it goes to admin approval."
     )
 
     uploaded_file = st.file_uploader(
@@ -762,7 +756,10 @@ def donor_page():
             st.session_state.tmp_image_b64 = base64.b64encode(image_bytes).decode()
             with st.spinner("Analyzing image (AI)..."):
                 st.session_state.ai_result = classify_image_with_ai(image_bytes)
-            st.success("AI provided suggested classifications. Please verify them below.")
+            if ai_verification_passed(st.session_state.ai_result):
+                st.success("Google Vision AI verified the image. Please review the classifications below.")
+            else:
+                st.error("Google Vision AI did not verify this image. Configure Google Vision or try another image.")
     else:
         st.error("Photo upload is required.")
 
@@ -787,6 +784,8 @@ def donor_page():
     if st.button("Submit Report", key="donor_submit"):
         if not uploaded_file:
             st.error("Photo upload is required.")
+        elif not ai_verification_passed(ai):
+            st.warning("Please analyze the uploaded photo with Google Vision AI before submitting.")
         elif not verified:
             st.warning("Please verify the report before submitting.")
         else:
@@ -809,13 +808,13 @@ def donor_page():
                 "edible_animal": bool(e_animal),
                 "compost": bool(e_compost),
                 "notes": safety_notes,
-                "status": "Pending Approval",
+                "status": "Pending Admin Approval",
                 "claimed_by": None,
                 "claimed_by_phone": None,
                 "image_b64": st.session_state.get("tmp_image_b64"),
                 "ai_review": json.dumps(ai, indent=2) if ai else None,
                 "admin_approved": False,
-                "ai_verified": bool(ai),
+                "ai_verified": True,
             }
             st.session_state.reports.append(new_report)
 
@@ -846,6 +845,36 @@ Please review and approve.
             st.balloons()
             st.session_state.tmp_image_b64 = None
             st.session_state.ai_result = None
+
+    st.subheader("My Submitted Reports")
+    my_reports = [
+        report
+        for report in st.session_state.reports
+        if report.get("restaurant") == r_name
+    ]
+    if not my_reports:
+        st.write("No submissions from this restaurant yet.")
+    else:
+        for report in my_reports:
+            st.write(
+                f"#{report['id']} - {report['waste_description']} - "
+                f"{report['status']}"
+            )
+            if report.get("admin_approved"):
+                st.success("Accepted by admin and visible to volunteers.")
+            if report.get("claimed_by"):
+                st.info(f"Claimed by volunteer/shelter: {report['claimed_by']}")
+                if st.button(
+                    f"Contact volunteer for report #{report['id']}",
+                    key=f"donor_contact_{report['id']}",
+                ):
+                    msg = (
+                        f"Restaurant Contact Request\n\n"
+                        f"{r_name} wants to contact {report['claimed_by']} "
+                        f"about report #{report['id']}."
+                    )
+                    result = send_whatsapp_message(ADMIN_WHATSAPP_NUMBER, msg)
+                    handle_message_result(result, "Contact request sent to admin.")
 
 
 def main():
