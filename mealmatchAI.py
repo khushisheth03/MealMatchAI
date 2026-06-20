@@ -170,28 +170,41 @@ def generate_food_notes(labels, predictions):
 def classify_image_with_ai(image_bytes):
     """Classify an image with Hugging Face Inference API."""
     try:
+        # 1. Fetch the HF token safely from Streamlit Secrets or Environment Variables
         token = st.secrets.get("HF_TOKEN", os.getenv("HF_TOKEN", ""))
+        
         headers = {"Content-Type": "application/octet-stream"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
+        # 2. Make the POST request to Hugging Face's server
         response = requests.post(
             f"https://api-inference.huggingface.co/models/{HF_MODEL}",
             headers=headers,
             data=image_bytes,
             timeout=60,
         )
+        
         response.raise_for_status()
         predictions = response.json()
-        if isinstance(predictions, dict) and predictions.get("error"):
-            raise RuntimeError(predictions["error"])
+        
+        # 3. Check for errors or model loading states
+        if isinstance(predictions, dict):
+            if predictions.get("error"):
+                # If the model is sleeping, HF will return an estimated time to load
+                if "estimated_time" in predictions:
+                    raise RuntimeError(f"Model is waking up. Please retry in {int(predictions['estimated_time'])} seconds.")
+                raise RuntimeError(predictions["error"])
+            raise RuntimeError("Unexpected dictionary response from Hugging Face.")
+            
         if not isinstance(predictions, list) or not predictions:
             raise RuntimeError("Hugging Face returned no image labels.")
 
+        # 4. Extract labels from valid predictions
         labels = [item.get("label", "") for item in predictions if item.get("label")]
 
         return {
-            "category": labels[0] if labels else "Unknown",
+            "category": labels[0].replace("_", " ").title() if labels else "Unknown",
             "labels": labels,
             "predictions": predictions[:5],
             "edible_human": analyze_food_safety_human(labels),
@@ -199,15 +212,13 @@ def classify_image_with_ai(image_bytes):
             "compost": analyze_compost_safety(labels),
             "notes": generate_food_notes(labels, predictions),
         }
-    except Exception as exc:
-        return {
-            "category": "Manual Review",
-            "labels": [],
-            "edible_human": True,
-            "edible_animal": False,
-            "compost": False,
-            "notes": f"AI classification failed: {exc}. Please verify manually.",
-        }
+
+    except requests.exceptions.HTTPError as e:
+        st.error(f"Hugging Face API HTTP Error: {e}")
+        return None
+    except Exception as e:
+        st.error(f"Image Classification Failed: {e}")
+        return None
 
 
 def ai_verification_passed(ai_result):
