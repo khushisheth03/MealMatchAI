@@ -5,7 +5,46 @@ import math
 import os
 import base64
 import json
-import pywhatkit as whatsapp
+
+try:
+    from twilio.rest import Client
+    TWILIO_AVAILABLE = True
+except ImportError:
+    TWILIO_AVAILABLE = False
+
+# WhatsApp/Twilio Configuration
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+8511370099")
+ADMIN_WHATSAPP_NUMBER = os.getenv("ADMIN_WHATSAPP_NUMBER", "whatsapp:+8511370099")
+
+def send_whatsapp_message(to_number, message):
+    """Send WhatsApp message using Twilio."""
+    if not TWILIO_AVAILABLE:
+        print(f"[WhatsApp] Twilio not available. Demo message to {to_number}: {message}")
+        return {"status": "demo", "message": "Twilio SDK not installed"}
+    
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+        print(f"[WhatsApp] Demo message to {to_number}: {message}")
+        return {"status": "demo", "message": "WhatsApp credentials not configured"}
+
+    try:
+        # Validate phone number format
+        if not to_number or not str(to_number).strip():
+            return {"status": "error", "message": "Invalid recipient phone number"}
+        
+        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        msg = client.messages.create(
+            from_=TWILIO_WHATSAPP_NUMBER,
+            body=message,
+            to=to_number
+        )
+        print(f"[WhatsApp] Message sent successfully to {to_number} (SID: {msg.sid})")
+        return {"status": "sent", "sid": msg.sid}
+    except Exception as e:
+        error_msg = f"WhatsApp Error: {str(e)}"
+        print(error_msg)
+        return {"status": "error", "message": error_msg}
 
 # Simple distance approximation (km)
 def calculate_distance(lat1, lon1, lat2, lon2):
@@ -72,7 +111,7 @@ def initialize_state():
                 "quantity_kg": 8,
                 "reported_at": "2026-06-19 10:30",
                 "edible_human": True,
-                "edible_pet": False,
+                "compost": False,
                 "edible_animal": True,
                 "compost": False,
                 "notes": "All within best-by date, no spoilage. Excellent for food banks.",
@@ -94,7 +133,7 @@ def initialize_state():
                 "quantity_kg": 12,
                 "reported_at": "2026-06-19 09:15",
                 "edible_human": False,
-                "edible_pet": False,
+                "compost": False,
                 "edible_animal": False,
                 "compost": True,
                 "notes": "Good for composting",
@@ -116,9 +155,9 @@ def initialize_state():
                 "quantity_kg": 6,
                 "reported_at": "2026-06-18 18:45",
                 "edible_human": False,
-                "edible_pet": False,
-                "edible_animal": True,
                 "compost": True,
+                "edible_animal": True,
+                "compost": False,
                 "notes": "Meat may be spoiled for humans. Safe for pets (no onions/garlic) and livestock after inspection.",
                 "status": "Available",
                 "claimed_by": None,
@@ -138,10 +177,10 @@ def initialize_state():
                 "quantity_kg": 5,
                 "reported_at": "2026-06-19 11:00",
                 "edible_human": True,
-                "edible_pet": False,
+                "compost": False,
                 "edible_animal": False,
                 "compost": False,
-                "notes": "Human-safe. Contains chocolate & xylitol - NOT safe for dogs/cats.",
+                "notes": "Human-safe. Contains chocolate & xylitol - NOT safe for animals.",
                 "status": "Claimed",
                 "claimed_by": "Local Shelter Volunteer",
                 "image_b64": None,
@@ -265,10 +304,8 @@ def volunteer_page():
                         found = False
                         for report in st.session_state.reports:
                             if report["id"] == row["id"]:
-                                if report["status"] == "Available":
-                                    report["status"] = "Claimed"
-                                    report["claimed_by"] = st.session_state.user_name
-                                    found = True
+                                report["status"] = "Claimed"
+                                report["claimed_by"] = st.session_state.user_name
                                 break
                         if found:
                             st.success("Pickup claimed. The donor will be notified in a real deployment.")
@@ -306,7 +343,6 @@ def admin_page():
             st.write(f"**Admin Approved:** {'✅ Yes' if report.get('admin_approved') else '❌ No'}")
             st.write(
                 "Humans: " + ("✅" if report["edible_human"] else "❌") +
-                " | Pets: " + ("✅" if report.get("edible_pet", False) else "❌") +
                 " | Animals: " + ("✅" if report["edible_animal"] else "❌") +
                 " | Compost: " + ("✅" if report["compost"] else "❌")
             )
@@ -338,7 +374,12 @@ def admin_page():
             with col3:
                 if st.button(f"Approve Report #{report['id']}", key=f"admin_approve_{report['id']}"):
                     report["admin_approved"] = True
-                    st.success("Report approved for verification.")
+                    msg = f"🔔 *Food Report Approved*\n\nReport #{report['id']} from {report['restaurant']} is ready for AI verification.\n\n🖼️ Image: {'Available' if report.get('image_b64') else 'Not available'}\n\n{report['waste_description']}"
+                    result = send_whatsapp_message(ADMIN_WHATSAPP_NUMBER, msg)
+                    if result["status"] == "error":
+                        st.warning(f"Report approved but WhatsApp notification failed: {result.get('message', 'Unknown error')}")
+                    else:
+                        st.success("Report approved. Admin notified via WhatsApp.")
                     st.rerun()
 
             if report.get("image_b64") and report.get("admin_approved") and not report.get("ai_verified"):
@@ -348,7 +389,12 @@ def admin_page():
                         ai_result = classify_image_with_ai(image_bytes)
                     report["ai_review"] = json.dumps(ai_result, indent=2)
                     report["ai_verified"] = True
-                    st.success("AI verification completed and saved to report.")
+                    msg = f"✅ *AI Verification Complete*\n\nReport #{report['id']} - {report['restaurant']}\n\n🏠 Humans: {'✅' if ai_result.get('edible_human') else '❌'}\n🐄 Animals: {'✅' if ai_result.get('edible_animal') else '❌'}\n♻️ Compost: {'✅' if ai_result.get('compost') else '❌'}"
+                    result = send_whatsapp_message(ADMIN_WHATSAPP_NUMBER, msg)
+                    if result["status"] == "error":
+                        st.warning(f"AI verification completed but WhatsApp notification failed: {result.get('message', 'Unknown error')}")
+                    else:
+                        st.success("AI verification completed. Admin notified.")
                     st.rerun()
             elif report.get("image_b64") and not report.get("admin_approved"):
                 st.warning("⚠️ Approve this report first before AI verification.")
@@ -365,13 +411,11 @@ def admin_page():
 
             st.subheader(f"Edit Classifications for Report #{report['id']}")
             e_human = st.checkbox("Safe for humans", value=report.get("edible_human", False), key=f"edit_human_{report['id']}")
-            e_pet = st.checkbox("Safe for pets", value=report.get("edible_pet", False), key=f"edit_pet_{report['id']}")
-            e_animal = st.checkbox("Safe for other animals", value=report.get("edible_animal", False), key=f"edit_animal_{report['id']}")
+            e_animal = st.checkbox("Safe for animals", value=report.get("edible_animal", False), key=f"edit_animal_{report['id']}")
             e_compost = st.checkbox("Safe for composting", value=report.get("compost", False), key=f"edit_compost_{report['id']}")
 
             if st.button(f"Save classifications #{report['id']}", key=f"save_class_{report['id']}"):
                 report["edible_human"] = e_human
-                report["edible_pet"] = e_pet
                 report["edible_animal"] = e_animal
                 report["compost"] = e_compost
                 st.success("Classifications updated.")
@@ -403,12 +447,12 @@ def donor_page():
     ai = st.session_state.get("ai_result")
     st.subheader("Suggested Classification")
     suggested_human = ai.get("edible_human") if ai else True
-    suggested_pet = ai.get("compost") if ai else False
+    suggested_compost = ai.get("compost") if ai else False
     suggested_animal = ai.get("edible_animal") if ai else False
 
     e_human = st.checkbox("Safe for humans", value=suggested_human, key="donor_human")
-    e_pet = st.checkbox("Safe for pets", value=suggested_pet, key="donor_pet")
-    e_animal = st.checkbox("Safe for other animals", value=suggested_animal, key="donor_animal")
+    e_animal = st.checkbox("Safe for animals", value=suggested_animal, key="donor_animal")
+    e_compost = st.checkbox("Safe for composting", value=suggested_compost, key="donor_compost")
 
     safety_notes_default = ai.get("notes") if ai else "Please verify the food condition and ingredients."
     safety_notes = st.text_area("Safety notes / reasons for classification", safety_notes_default, key="donor_notes")
@@ -430,9 +474,8 @@ def donor_page():
                 "quantity_kg": qty,
                 "reported_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "edible_human": bool(e_human),
-                "edible_pet": bool(e_pet),
                 "edible_animal": bool(e_animal),
-                "compost": bool(e_pet),
+                "compost": bool(e_compost),
                 "notes": safety_notes,
                 "status": "Available",
                 "claimed_by": None,
@@ -442,7 +485,12 @@ def donor_page():
                 "ai_verified": False,
             }
             st.session_state.reports.append(new_report)
-            st.success("Report added successfully! Volunteers can now see and claim it.")
+            msg = f"📢 *New Food Report!*\n\n🏪 {r_name}\n📍 {r_address}, {r_city}\n\n🍲 {waste_desc}\n⚖️ Quantity: {qty} kg\n\n👤 Donor: {st.session_state.user_name}\n🖼️ Image: {'Yes' if st.session_state.get('tmp_image_b64') else 'No'}\n\nHumans: {'✅' if e_human else '❌'}\nAnimals: {'✅' if e_animal else '❌'}\nCompost: {'✅' if e_compost else '❌'}"
+            result = send_whatsapp_message(ADMIN_WHATSAPP_NUMBER, msg)
+            if result["status"] == "error":
+                st.warning(f"Report submitted but WhatsApp notification failed: {result.get('message', 'Unknown error')}")
+            else:
+                st.success("Report added successfully! Admin & volunteers notified.")
             st.balloons()
             st.session_state.tmp_image_b64 = None
             st.session_state.ai_result = None
