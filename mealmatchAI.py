@@ -98,6 +98,9 @@ def classify_image_with_ai(image_bytes):
 
 
 def initialize_state():
+    if 'current_page' not in st.session_state:
+        st.session_state.current_page = "dashboard"
+    
     if 'reports' not in st.session_state:
         st.session_state.reports = [
             {
@@ -117,6 +120,7 @@ def initialize_state():
                 "notes": "All within best-by date, no spoilage. Excellent for food banks.",
                 "status": "Available",
                 "claimed_by": None,
+                "claimed_by_phone": None,
                 "image_b64": None,
                 "ai_review": None,
                 "admin_approved": False,
@@ -139,6 +143,7 @@ def initialize_state():
                 "notes": "Good for composting",
                 "status": "Available",
                 "claimed_by": "ABC SHELTER VOLUNTEER",
+                "claimed_by_phone": None,
                 "image_b64": None,
                 "ai_review": None,
                 "admin_approved": False,
@@ -161,6 +166,7 @@ def initialize_state():
                 "notes": "Meat may be spoiled for humans. Safe for pets (no onions/garlic) and livestock after inspection.",
                 "status": "Available",
                 "claimed_by": None,
+                "claimed_by_phone": None,
                 "image_b64": None,
                 "ai_review": None,
                 "admin_approved": False,
@@ -183,6 +189,7 @@ def initialize_state():
                 "notes": "Human-safe. Contains chocolate & xylitol - NOT safe for animals.",
                 "status": "Claimed",
                 "claimed_by": "Local Shelter Volunteer",
+                "claimed_by_phone": None,
                 "image_b64": None,
                 "ai_review": None,
                 "admin_approved": False,
@@ -204,6 +211,12 @@ def initialize_state():
         st.session_state.tmp_image_b64 = None
     if 'ai_result' not in st.session_state:
         st.session_state.ai_result = None
+    
+    if 'show_msg_form' not in st.session_state:
+        st.session_state.show_msg_form = None
+    
+    if 'show_donor_msg' not in st.session_state:
+        st.session_state.show_donor_msg = None
 
 
 def build_sidebar():
@@ -219,13 +232,29 @@ def build_sidebar():
     if st.session_state.authenticated:
         st.sidebar.markdown(f"**Logged in as:** {st.session_state.user_name}")
         st.sidebar.markdown(f"**Role:** {st.session_state.user_role}")
-        if st.sidebar.button("Logout"):
-            st.session_state.authenticated = False
-            st.session_state.user_role = None
-            st.session_state.user_name = None
-            st.session_state.tmp_image_b64 = None
-            st.session_state.ai_result = None
-            st.rerun()
+        
+        st.sidebar.divider()
+        col1, col2, col3 = st.sidebar.columns(3)
+        with col1:
+            if st.button("← Back", key="back_btn", use_container_width=True):
+                st.session_state.authenticated = False
+                st.session_state.user_role = None
+                st.session_state.user_name = None
+                st.session_state.tmp_image_b64 = None
+                st.session_state.ai_result = None
+                st.rerun()
+        with col2:
+            if st.button("🔧 Classify", key="classify_tool_btn", use_container_width=True):
+                st.session_state.current_page = "classify"
+                st.rerun()
+        with col3:
+            if st.button("📱 Logout", key="logout_btn", use_container_width=True):
+                st.session_state.authenticated = False
+                st.session_state.user_role = None
+                st.session_state.user_name = None
+                st.session_state.tmp_image_b64 = None
+                st.session_state.ai_result = None
+                st.rerun()
 
 
 def render_login():
@@ -248,6 +277,50 @@ def render_login():
             st.session_state.user_role = role
             st.success(f"Welcome, {name}! Redirecting to your {role} dashboard.")
             st.rerun()
+
+
+def classification_tool_page():
+    """Dedicated page for AI image classification."""
+    st.title("🔬 AI Classification Tool")
+    st.info("Upload food images to get AI-powered safety classifications for any food item.")
+    
+    uploaded_file = st.file_uploader("Upload food image", type=["png", "jpg", "jpeg"], key="classify_image")
+    
+    if uploaded_file:
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.image(uploaded_file, caption="Uploaded image", use_column_width=True)
+        
+        with col2:
+            st.subheader("Analysis Options")
+            if st.button("🔍 Analyze with AI", use_container_width=True):
+                image_bytes = uploaded_file.read()
+                with st.spinner("Running AI analysis..."):
+                    ai_result = classify_image_with_ai(image_bytes)
+                
+                st.subheader("Classification Results")
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    status = "✅ Safe" if ai_result.get("edible_human") else "❌ Not Safe"
+                    st.metric("For Humans", status)
+                with col_b:
+                    status = "✅ Safe" if ai_result.get("edible_animal") else "❌ Not Safe"
+                    st.metric("For Animals", status)
+                with col_c:
+                    status = "✅ Yes" if ai_result.get("compost") else "❌ No"
+                    st.metric("For Compost", status)
+                
+                st.write("**AI Notes:**", ai_result.get("notes", "No notes provided"))
+                
+                if "confidences" in ai_result:
+                    st.subheader("Confidence Scores")
+                    conf = ai_result["confidences"]
+                    st.progress(conf.get("edible_human", 0), text=f"Human Safety: {conf.get('edible_human', 0):.0%}")
+                    st.progress(conf.get("edible_animal", 0), text=f"Animal Safety: {conf.get('edible_animal', 0):.0%}")
+                    st.progress(conf.get("compost", 0), text=f"Composting: {conf.get('compost', 0):.0%}")
+                
+                st.subheader("Full AI Response")
+                st.json(ai_result)
 
 
 def volunteer_page():
@@ -300,18 +373,58 @@ def volunteer_page():
                         st.write(f"**AI Review:** {row['ai_review']}")
 
                 if row["status"] == "Available":
-                    if st.button(f"Claim pickup #{row['id']}", key=f"claim_{row['id']}"):
-                        found = False
-                        for report in st.session_state.reports:
-                            if report["id"] == row["id"]:
-                                report["status"] = "Claimed"
-                                report["claimed_by"] = st.session_state.user_name
-                                break
-                        if found:
-                            st.success("Pickup claimed. The donor will be notified in a real deployment.")
-                        else:
-                            st.warning("This pickup was already claimed by another volunteer.")
-                        st.rerun()
+                    col_claim1, col_claim2 = st.columns([2, 1])
+                    with col_claim1:
+                        if st.button(f"✅ Claim pickup #{row['id']}", key=f"claim_{row['id']}", use_container_width=True):
+                            found = False
+                            for report in st.session_state.reports:
+                                if report["id"] == row["id"]:
+                                    report["status"] = "Claimed"
+                                    report["claimed_by"] = st.session_state.user_name
+                                    found = True
+                                    break
+                            if found:
+                                st.success("✅ Pickup claimed!")
+                            else:
+                                st.warning("⚠️ This pickup was already claimed by another volunteer.")
+                            st.rerun()
+                    
+                    with col_claim2:
+                        if st.button(f"💬 Message", key=f"msg_{row['id']}", use_container_width=True):
+                            st.session_state.show_msg_form = row["id"]
+                            st.rerun()
+                    
+                    # WhatsApp message form
+                    if st.session_state.get("show_msg_form") == row["id"]:
+                        with st.expander("📱 Send WhatsApp Message", expanded=True):
+                            contact_phone = st.text_input(
+                                "Your WhatsApp number (e.g., whatsapp:+1234567890)",
+                                key=f"volunteer_phone_{row['id']}"
+                            )
+                            msg_text = st.text_area(
+                                "Message to donor",
+                                value=f"Hi, I'm interested in claiming the pickup from {row['restaurant']} ({row['waste_description']}). Can I contact you about pickup time?",
+                                key=f"vol_msg_{row['id']}"
+                            )
+                            col_msg1, col_msg2 = st.columns(2)
+                            with col_msg1:
+                                if st.button(f"Send Message", key=f"send_msg_{row['id']}", use_container_width=True):
+                                    if not contact_phone:
+                                        st.warning("Please enter your WhatsApp number")
+                                    else:
+                                        # Send notification to admin with volunteer's contact
+                                        admin_msg = f"📲 *Volunteer Inquiry*\n\n👤 {st.session_state.user_name}\n📱 {contact_phone}\n\n📍 Report #{row['id']} - {row['restaurant']}\n\n💬 Message:\n{msg_text}"
+                                        result = send_whatsapp_message(ADMIN_WHATSAPP_NUMBER, admin_msg)
+                                        if result["status"] != "error":
+                                            st.success("Message sent to admin & donor!")
+                                        else:
+                                            st.warning(f"Failed to send: {result.get('message')}")
+                                        st.session_state.show_msg_form = None
+                                        st.rerun()
+                            with col_msg2:
+                                if st.button("Cancel", key=f"cancel_msg_{row['id']}", use_container_width=True):
+                                    st.session_state.show_msg_form = None
+                                    st.rerun()
     else:
         st.warning("No opportunities match the selected filters.")
 
@@ -319,7 +432,37 @@ def volunteer_page():
     my_claims = [r for r in st.session_state.reports if r.get("claimed_by") == st.session_state.user_name]
     if my_claims:
         for claim in my_claims:
-            st.write(f"- #{claim['id']} {claim['restaurant']} — {claim['waste_description']} ({claim['status']})")
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.write(f"- #{claim['id']} {claim['restaurant']} — {claim['waste_description']} ({claim['status']})")
+            with col2:
+                if st.button("💬", key=f"contact_donor_{claim['id']}", help="Contact donor", use_container_width=True):
+                    st.session_state.show_donor_msg = claim['id']
+                    st.rerun()
+            
+            # Contact donor form
+            if st.session_state.get("show_donor_msg") == claim['id']:
+                with st.expander("📱 Send Message to Donor", expanded=True):
+                    donor_msg = st.text_area(
+                        "Message to donor",
+                        value=f"Hi, I'm here for the pickup of {claim['waste_description']} from your restaurant. When is convenient for pickup?",
+                        key=f"donor_contact_msg_{claim['id']}"
+                    )
+                    col_d1, col_d2 = st.columns(2)
+                    with col_d1:
+                        if st.button("Send via Admin", key=f"send_to_donor_{claim['id']}", use_container_width=True):
+                            admin_msg = f"📲 *Pickup Notification*\n\n🏘️ {st.session_state.user_name} is ready for pickup!\n\n📍 Report #{claim['id']} - {claim['restaurant']}\n\n💬 Message:\n{donor_msg}"
+                            result = send_whatsapp_message(ADMIN_WHATSAPP_NUMBER, admin_msg)
+                            if result["status"] != "error":
+                                st.success("Message sent to admin to relay to donor!")
+                            else:
+                                st.warning(f"Failed: {result.get('message')}")
+                            st.session_state.show_donor_msg = None
+                            st.rerun()
+                    with col_d2:
+                        if st.button("Cancel", key=f"cancel_donor_{claim['id']}", use_container_width=True):
+                            st.session_state.show_donor_msg = None
+                            st.rerun()
     else:
         st.write("You have not claimed any pickups yet.")
 
@@ -509,6 +652,17 @@ def main():
     if not st.session_state.authenticated:
         render_login()
         return
+
+    # Check if user clicked on classification tool
+    if st.session_state.get("current_page") == "classify":
+        if st.button("← Back to Dashboard", key="back_from_classify"):
+            st.session_state.current_page = "dashboard"
+            st.rerun()
+        classification_tool_page()
+        return
+    
+    # Reset to dashboard view
+    st.session_state.current_page = "dashboard"
 
     if st.session_state.user_role == "Volunteer / Shelter":
         volunteer_page()
