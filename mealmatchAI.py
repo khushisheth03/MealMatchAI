@@ -199,7 +199,7 @@ def render_login():
             st.session_state.user_name = name
             st.session_state.user_role = role
             st.success(f"Welcome, {name}! Redirecting to your {role} dashboard.")
-            st.experimental_rerun()
+            st.rerun()
 
 
 def volunteer_page():
@@ -259,7 +259,7 @@ def volunteer_page():
                                 report["claimed_by"] = st.session_state.user_name
                                 break
                         st.success("Pickup claimed. The donor will be notified in a real deployment.")
-                        st.experimental_rerun()
+                        st.rerun()
     else:
         st.warning("No opportunities match the selected filters.")
 
@@ -307,14 +307,14 @@ def admin_page():
                 report["status"] = "Available"
                 report["claimed_by"] = None
                 st.success("Report marked available.")
-                st.experimental_rerun()
+                st.rerun()
 
             if st.button(f"Mark Claimed #{report['id']}", key=f"admin_claimed_{report['id']}"):
                 report["status"] = "Claimed"
                 if not report.get("claimed_by"):
                     report["claimed_by"] = "Admin assigned"
                 st.success("Report marked claimed.")
-                st.experimental_rerun()
+                st.rerun()
 
             if report.get("image_b64") and st.button(f"AI verify image #{report['id']}", key=f"ai_verify_{report['id']}"):
                 image_bytes = base64.b64decode(report["image_b64"])
@@ -322,7 +322,7 @@ def admin_page():
                     ai_result = classify_image_with_ai(image_bytes)
                 report["ai_review"] = json.dumps(ai_result, indent=2)
                 st.success("AI verification completed and saved to report.")
-                st.experimental_rerun()
+                st.rerun()
 
             note_update = st.text_area(
                 "Update notes", value=report["notes"], key=f"admin_notes_{report['id']}", height=120
@@ -330,7 +330,7 @@ def admin_page():
             if st.button(f"Save notes #{report['id']}", key=f"save_notes_{report['id']}"):
                 report["notes"] = note_update
                 st.success("Notes updated.")
-                st.experimental_rerun()
+                st.rerun()
 
 
 def donor_page():
@@ -425,7 +425,5 @@ def main():
         st.error("Unknown role. Please logout and login again.")
 
 
-if __name__ == "__main__":
-    main()
 
 
