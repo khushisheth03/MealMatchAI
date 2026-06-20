@@ -10,6 +10,65 @@ import streamlit as st
 
 HF_MODEL = os.getenv("HF_MODEL", "nateraw/food")
 
+LOCATION_PRESETS = {
+    "Downtown Metro": (40.7128, -74.0060),
+    "Downtown": (23.0339, 72.5850),
+    "Northside": (40.7580, -73.9855),
+    "Southside": (40.6892, -74.0445),
+    "West End": (40.7306, -73.9971),
+}
+
+
+def apply_app_theme():
+    st.markdown(
+        """
+        <style>
+        .main .block-container {
+            padding-top: 2rem;
+            max-width: 1180px;
+        }
+        div[data-testid="stMetric"] {
+            background: #f7faf9;
+            border: 1px solid #dfe8e4;
+            border-radius: 8px;
+            padding: 14px 16px;
+        }
+        div[data-testid="stExpander"] {
+            border-radius: 8px;
+            border-color: #dfe8e4;
+        }
+        .stButton > button {
+            border-radius: 7px;
+            font-weight: 600;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def get_location_coords(area):
+    return LOCATION_PRESETS.get(area, LOCATION_PRESETS["Downtown Metro"])
+
+
+def render_hf_troubleshooting():
+    with st.expander("Hugging Face Connection Help", expanded=False):
+        st.write(
+            "The DNS error means this computer or hosting environment cannot resolve "
+            "`api-inference.huggingface.co`. MealMatch will keep working with offline "
+            "safety review, but use these steps to restore the live API:"
+        )
+        st.markdown(
+            """
+            1. Open a browser on the same device and visit `https://api-inference.huggingface.co`.
+            2. If it does not open, switch networks or disable a VPN/proxy/firewall that blocks Hugging Face.
+            3. Confirm your internet DNS works by trying another network, mobile hotspot, or public DNS.
+            4. Add your Hugging Face token as `HF_TOKEN` in Streamlit secrets or environment variables.
+            5. Restart Streamlit after changing network or token settings.
+            6. Try the photo analysis again. If it still fails, continue the demo with offline review and admin approval.
+            """
+        )
+
 
 def calculate_distance(lat1, lon1, lat2, lon2):
     """Calculate distance between two coordinates in kilometers."""
@@ -411,7 +470,7 @@ def classify_image_with_ai(image_bytes, description=""):
         st.error(f"Hugging Face API HTTP Error: {e}")
         return manual_review_result(f"Hugging Face API HTTP error: {e}")
     except requests.exceptions.RequestException as e:
-        reason = f"Hugging Face API connection error: {e}"
+        reason = "Hugging Face is unreachable from this network right now."
         st.warning(reason)
         return offline_food_review(description, reason)
     except Exception as e:
@@ -529,6 +588,7 @@ def initialize_state():
         "authenticated": False,
         "user_role": None,
         "user_name": None,
+        "user_area": "Downtown Metro",
         "user_lat": 40.7128,
         "user_lon": -74.0060,
         "tmp_image_b64": None,
@@ -545,27 +605,16 @@ def initialize_state():
 
 
 def build_sidebar():
-    st.sidebar.header("Your Location (Demo)")
-    st.session_state.user_lat = st.sidebar.number_input(
-        "Latitude", value=st.session_state.user_lat, format="%.4f", key="lat"
-    )
-    st.session_state.user_lon = st.sidebar.number_input(
-        "Longitude", value=st.session_state.user_lon, format="%.4f", key="lon"
-    )
-    st.sidebar.caption("Change these numbers to simulate moving.")
-
     if st.session_state.authenticated:
-        st.sidebar.markdown(f"**Logged in as:** {st.session_state.user_name}")
+        st.sidebar.header("MealMatch")
+        st.sidebar.caption("Food rescue coordination")
+        st.sidebar.divider()
+        st.sidebar.markdown(f"**Signed in:** {st.session_state.user_name}")
         st.sidebar.markdown(f"**Role:** {st.session_state.user_role}")
         st.sidebar.divider()
 
-        col1, col2 = st.sidebar.columns(2)
-        with col1:
-            if st.button("Back", key="back_btn", use_container_width=True):
-                logout()
-        with col2:
-            if st.button("Logout", key="logout_btn", use_container_width=True):
-                logout()
+        if st.button("Logout", key="logout_btn", use_container_width=True):
+            logout()
 
 
 def logout():
@@ -579,25 +628,36 @@ def logout():
 
 
 def render_login():
-    st.title("MealMatch Login")
-    st.info("Choose your role and enter your name or organization to continue.")
+    st.title("MealMatch")
+    st.caption("Match surplus food with shelters, animal care groups, and compost partners.")
 
-    name = st.text_input("Name or Organization", key="login_name")
-    role = st.selectbox(
-        "I am a:",
-        ["Volunteer / Shelter", "Admin", "Restaurant / Donor"],
-        key="login_role",
-    )
+    col_intro, col_login = st.columns([1.1, 1])
+    with col_intro:
+        st.subheader("Rescue the right food faster")
+        st.write("Restaurants upload a photo, MealMatch suggests safe routing, admins approve, and volunteers coordinate pickup in one place.")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Routes", "3", "Human, animal, compost")
+        m2.metric("Approval", "Admin", "Required")
+        m3.metric("Messages", "Live", "Per report")
 
-    if st.button("Continue"):
-        if not name:
-            st.warning("Please enter your name or organization.")
-        else:
-            st.session_state.authenticated = True
-            st.session_state.user_name = name
-            st.session_state.user_role = role
-            st.success(f"Welcome, {name}! Redirecting to your {role} dashboard.")
-            st.rerun()
+    with col_login:
+        st.subheader("Sign in")
+        name = st.text_input("Name or Organization", key="login_name")
+        role = st.selectbox(
+            "Role",
+            ["Volunteer / Shelter", "Admin", "Restaurant / Donor"],
+            key="login_role",
+        )
+
+        if st.button("Continue", use_container_width=True):
+            if not name:
+                st.warning("Please enter your name or organization.")
+            else:
+                st.session_state.authenticated = True
+                st.session_state.user_name = name
+                st.session_state.user_role = role
+                st.success(f"Welcome, {name}! Redirecting to your {role} dashboard.")
+                st.rerun()
 
 
 def render_safety_badge(row):
@@ -613,10 +673,24 @@ def render_safety_badge(row):
 
 def volunteer_page():
     st.title("Volunteer / Shelter Dashboard")
-    st.info("Locate available food donations and claim pickups for your organization.")
+    st.caption("Find approved pickups near your service area and coordinate with donors.")
     render_message_center("volunteer")
 
-    show_available = st.checkbox("Only available spots", value=True)
+    col_area, col_filter = st.columns([2, 1])
+    with col_area:
+        areas = list(LOCATION_PRESETS.keys())
+        selected_index = areas.index(st.session_state.user_area) if st.session_state.user_area in areas else 0
+        selected_area = st.selectbox(
+            "Service area",
+            areas,
+            index=selected_index,
+            key="volunteer_area",
+        )
+        st.session_state.user_area = selected_area
+        st.session_state.user_lat, st.session_state.user_lon = get_location_coords(selected_area)
+    with col_filter:
+        show_available = st.checkbox("Show only available pickups", value=True)
+
     df = pd.DataFrame(st.session_state.reports)
 
     df = df[(df["admin_approved"] == True) & (df["ai_verified"] == True)]
@@ -635,6 +709,12 @@ def volunteer_page():
             axis=1,
         )
         df = df.sort_values("distance_km")
+
+    total_available = len(df) if not df.empty else 0
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Matching pickups", total_available)
+    m2.metric("Your area", st.session_state.user_area)
+    m3.metric("Visibility", "Approved only")
 
     st.subheader("Available Rescue Opportunities")
     if not df.empty:
@@ -755,16 +835,19 @@ def render_my_claims():
 
 def admin_page():
     st.title("Admin Dashboard")
-    st.info("Review AI-verified uploads, inspect the food image, and approve it for volunteers.")
+    st.caption("Review uploads, inspect AI or offline safety notes, and publish safe pickups.")
     render_message_center("admin")
-
-    st.markdown("### Approval Workflow")
-    st.markdown("1. Restaurant uploads a food photo and details")
-    st.markdown("2. Hugging Face AI suggests image labels")
-    st.markdown("3. Admin reviews the image and AI result")
-    st.markdown("4. Admin approval publishes it for volunteers")
+    render_hf_troubleshooting()
 
     report_df = pd.DataFrame(st.session_state.reports)
+    pending_count = int((report_df["status"] == "Pending Admin Approval").sum())
+    available_count = int((report_df["status"] == "Available").sum())
+    claimed_count = int((report_df["status"] == "Claimed").sum())
+    col_pending, col_available, col_claimed = st.columns(3)
+    col_pending.metric("Needs review", pending_count)
+    col_available.metric("Available", available_count)
+    col_claimed.metric("Claimed", claimed_count)
+
     st.markdown("### Current Reports")
     st.dataframe(
         report_df[
@@ -903,11 +986,12 @@ def admin_page():
 def donor_page():
     
     st.title("Restaurant / Donor Reporting")
-    st.info(
+    st.caption(
         "Upload surplus pictures and provide quantity and safety details. "
-        "Hugging Face AI classifies the image before it goes to admin approval."
+        "MealMatch classifies the food route before admin approval."
     )
     render_message_center("donor")
+    render_hf_troubleshooting()
 
     uploaded_file = st.file_uploader(
         "Upload surplus food photo",
@@ -917,9 +1001,12 @@ def donor_page():
 
     r_name = st.text_input("Restaurant / Store Name", "Your Restaurant Name", key="donor_name")
     r_address = st.text_input("Full Address", "123 Example Street, Downtown Metro", key="donor_address")
-    r_city = st.text_input("City / Area", "Downtown Metro", key="donor_city")
-    r_lat = st.number_input("Latitude (approx)", value=40.71, format="%.4f", key="donor_lat")
-    r_lon = st.number_input("Longitude (approx)", value=-74.01, format="%.4f", key="donor_lon")
+    r_city = st.selectbox(
+        "Pickup Area",
+        list(LOCATION_PRESETS.keys()),
+        key="donor_city",
+    )
+    r_lat, r_lon = get_location_coords(r_city)
     waste_desc = st.text_area(
         "Describe the surplus/waste",
         "E.g. Fresh bread, fruits, cooked rice - total 10 kg",
@@ -952,6 +1039,8 @@ def donor_page():
 
     ai = st.session_state.get("ai_result")
     st.subheader("Suggested Classification")
+    if ai:
+        st.caption(f"Review source: {ai.get('source', 'huggingface_api')}")
     suggested_human = ai.get("edible_human") if ai else True
     suggested_compost = ai.get("compost") if ai else False
     suggested_animal = ai.get("edible_animal") if ai else False
@@ -1056,6 +1145,7 @@ def main():
         layout="wide",
         initial_sidebar_state="expanded",
     )
+    apply_app_theme()
 
     initialize_state()
     build_sidebar()
