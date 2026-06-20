@@ -425,5 +425,9 @@ def main():
         st.error("Unknown role. Please logout and login again.")
 
 
+if __name__ == "__main__":
+    main()
+
+
 
 
