@@ -177,7 +177,7 @@ def build_sidebar():
             st.session_state.user_name = None
             st.session_state.tmp_image_b64 = None
             st.session_state.ai_result = None
-            st.experimental_rerun()
+            st.rerun()
 
 
 def render_login():
