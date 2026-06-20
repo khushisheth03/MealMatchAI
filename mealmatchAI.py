@@ -82,6 +82,63 @@ def render_report_chat(report_id, default_message, key_prefix):
             st.rerun()
 
 
+def get_visible_chat_reports():
+    role = st.session_state.user_role
+    name = st.session_state.user_name
+
+    if role == "Admin":
+        return st.session_state.reports
+
+    if role == "Restaurant / Donor":
+        return [
+            report
+            for report in st.session_state.reports
+            if report.get("restaurant") == name
+        ]
+
+    if role == "Volunteer / Shelter":
+        return [
+            report
+            for report in st.session_state.reports
+            if report.get("claimed_by") == name
+            or (
+                report.get("admin_approved")
+                and report.get("ai_verified")
+                and report.get("status") == "Available"
+            )
+        ]
+
+    return []
+
+
+def render_message_center(key_prefix):
+    visible_reports = get_visible_chat_reports()
+    report_lookup = {report["id"]: report for report in visible_reports}
+
+    with st.expander("Message Center", expanded=False):
+        if not visible_reports:
+            st.write("No report conversations are available yet.")
+            return
+
+        options = [
+            f"#{report['id']} - {report['restaurant']} - {report['status']}"
+            for report in visible_reports
+        ]
+        selected = st.selectbox(
+            "Report conversation",
+            options,
+            key=f"{key_prefix}_message_report",
+        )
+        selected_id = int(selected.split(" - ")[0].replace("#", ""))
+        selected_report = report_lookup[selected_id]
+
+        default_message = (
+            f"Hi, this is {st.session_state.user_name}. "
+            f"I have an update about report #{selected_id} from {selected_report['restaurant']}."
+        )
+        render_report_chat(selected_id, default_message, f"{key_prefix}_center")
+
+
 def analyze_food_safety_human(labels):
     """Determine if food is safe for human consumption."""
     unsafe_keywords = [
@@ -167,17 +224,62 @@ def generate_food_notes(labels, predictions):
     return notes
 
 
+def manual_review_result(reason):
+    """Create a safe fallback result when AI classification cannot be trusted."""
+    return {
+        "category": "Manual Review",
+        "labels": [],
+        "predictions": [],
+        "edible_human": False,
+        "edible_animal": False,
+        "compost": False,
+        "notes": reason,
+    }
+
+
+def normalize_hf_predictions(payload):
+    """Handle common Hugging Face response shapes for image classification."""
+    if isinstance(payload, dict):
+        if payload.get("error"):
+            if payload.get("estimated_time"):
+                seconds = int(payload["estimated_time"])
+                raise RuntimeError(f"Model is waking up. Please retry in about {seconds} seconds.")
+            raise RuntimeError(str(payload["error"]))
+
+        if isinstance(payload.get("labels"), list):
+            return payload["labels"]
+
+        if isinstance(payload.get("predictions"), list):
+            return payload["predictions"]
+
+        raise RuntimeError("Hugging Face returned an unsupported response format.")
+
+    if isinstance(payload, list):
+        if payload and isinstance(payload[0], list):
+            payload = payload[0]
+
+        if all(isinstance(item, dict) for item in payload):
+            return payload
+
+    raise RuntimeError("Hugging Face returned no usable image labels.")
+
+
 def classify_image_with_ai(image_bytes):
     """Classify an image with Hugging Face Inference API."""
     try:
-        # 1. Fetch the HF token safely from Streamlit Secrets or Environment Variables
-        token = st.secrets.get("HF_TOKEN", os.getenv("HF_TOKEN", ""))
+        try:
+            token = st.secrets.get("HF_TOKEN", "")
+        except Exception:
+            token = ""
+        token = token or os.getenv("HF_TOKEN", "")
         
-        headers = {"Content-Type": "application/octet-stream"}
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/octet-stream",
+        }
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
-        # 2. Make the POST request to Hugging Face's server
         response = requests.post(
             f"https://api-inference.huggingface.co/models/{HF_MODEL}",
             headers=headers,
@@ -185,23 +287,26 @@ def classify_image_with_ai(image_bytes):
             timeout=60,
         )
         
-        response.raise_for_status()
-        predictions = response.json()
-        
-        # 3. Check for errors or model loading states
-        if isinstance(predictions, dict):
-            if predictions.get("error"):
-                # If the model is sleeping, HF will return an estimated time to load
-                if "estimated_time" in predictions:
-                    raise RuntimeError(f"Model is waking up. Please retry in {int(predictions['estimated_time'])} seconds.")
-                raise RuntimeError(predictions["error"])
-            raise RuntimeError("Unexpected dictionary response from Hugging Face.")
-            
-        if not isinstance(predictions, list) or not predictions:
-            raise RuntimeError("Hugging Face returned no image labels.")
+        if response.status_code == 503:
+            try:
+                payload = response.json()
+                normalize_hf_predictions(payload)
+                return manual_review_result("Hugging Face model is temporarily unavailable. Please retry.")
+            except Exception as exc:
+                return manual_review_result(str(exc))
 
-        # 4. Extract labels from valid predictions
+        response.raise_for_status()
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return manual_review_result("Hugging Face returned a non-JSON response.")
+
+        predictions = normalize_hf_predictions(payload)
+
         labels = [item.get("label", "") for item in predictions if item.get("label")]
+        if not labels:
+            return manual_review_result("Hugging Face returned predictions without labels.")
 
         return {
             "category": labels[0].replace("_", " ").title() if labels else "Unknown",
@@ -215,10 +320,13 @@ def classify_image_with_ai(image_bytes):
 
     except requests.exceptions.HTTPError as e:
         st.error(f"Hugging Face API HTTP Error: {e}")
-        return None
+        return manual_review_result(f"Hugging Face API HTTP error: {e}")
+    except requests.exceptions.RequestException as e:
+        st.error(f"Hugging Face API Connection Error: {e}")
+        return manual_review_result(f"Hugging Face API connection error: {e}")
     except Exception as e:
         st.error(f"Image Classification Failed: {e}")
-        return None
+        return manual_review_result(f"Image classification failed: {e}")
 
 
 def ai_verification_passed(ai_result):
@@ -416,6 +524,7 @@ def render_safety_badge(row):
 def volunteer_page():
     st.title("Volunteer / Shelter Dashboard")
     st.info("Locate available food donations and claim pickups for your organization.")
+    render_message_center("volunteer")
 
     show_available = st.checkbox("Only available spots", value=True)
     df = pd.DataFrame(st.session_state.reports)
@@ -557,6 +666,7 @@ def render_my_claims():
 def admin_page():
     st.title("Admin Dashboard")
     st.info("Review AI-verified uploads, inspect the food image, and approve it for volunteers.")
+    render_message_center("admin")
 
     st.markdown("### Approval Workflow")
     st.markdown("1. Restaurant uploads a food photo and details")
@@ -701,11 +811,13 @@ def admin_page():
 
 
 def donor_page():
+    
     st.title("Restaurant / Donor Reporting")
     st.info(
         "Upload surplus pictures and provide quantity and safety details. "
         "Hugging Face AI classifies the image before it goes to admin approval."
     )
+    render_message_center("donor")
 
     uploaded_file = st.file_uploader(
         "Upload surplus food photo",
@@ -724,7 +836,7 @@ def donor_page():
         key="donor_desc",
     )
     qty = st.number_input("Quantity (kg)", min_value=1, value=5, key="donor_qty")
-
+    
     if uploaded_file:
         st.image(uploaded_file, caption="Uploaded photo", use_container_width=True)
         if st.button("Analyze Photo with AI", key="donor_analyze"):
