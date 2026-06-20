@@ -5,6 +5,12 @@ import math
 import os
 import base64
 import json
+try:
+    from google.cloud import vision
+    from google.cloud.vision_v1 import types
+    GOOGLE_VISION_AVAILABLE = True
+except ImportError:
+    GOOGLE_VISION_AVAILABLE = False
 
 try:
     from twilio.rest import Client
@@ -12,6 +18,9 @@ try:
 except ImportError:
     TWILIO_AVAILABLE = False
 
+# Google Cloud Vision Configuration
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "graceful-goods-500005-s8-cfb0f75b4a16.json"
+client = vision.ImageAnnotatorClient()
 # WhatsApp/Twilio Configuration
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
@@ -46,61 +55,162 @@ def send_whatsapp_message(to_number, message):
         print(error_msg)
         return {"status": "error", "message": error_msg}
 
+
+def show_message_form(form_id, form_type="inquiry"):
+    """Display and handle message form for volunteers and donors."""
+    st.session_state.active_message_form = form_id
+    st.session_state.message_form_type = form_type
+    st.rerun()
+
 # Simple distance approximation (km)
 def calculate_distance(lat1, lon1, lat2, lon2):
     return math.sqrt((lat1 - lat2)**2 + (lon1 - lon2)**2) * 111.0
 
 
 def classify_image_with_ai(image_bytes):
-    """Classify an image and return a recommended edibility review."""
+    """Classify food image using Google Cloud Vision API."""
     try:
-        import openai
-        openai.api_key = os.getenv("OPENAI_API_KEY")
-        if not openai.api_key:
-            raise RuntimeError("OPENAI_API_KEY not set")
-
-        b64 = base64.b64encode(image_bytes).decode()
-        prompt = (
-            "You are a food-safety assistant. Given an image (base64) of food, decide whether it is likely "
-            "safe for humans, safe for common pets (dogs/cats), and safe for other animals/livestock. "
-            "Respond ONLY with a single valid JSON object with keys: edible_human (true/false), compost (true/false), "
-            "edible_animal (true/false), notes (short string), confidences (object with keys edible_human, compost, edible_animal with numbers 0-1).\n\n"
-            f"Image (base64, truncated): {b64[:2000]}"
+        if not GOOGLE_VISION_AVAILABLE:
+            raise RuntimeError("Google Cloud Vision SDK not installed. Install with: pip install google-cloud-vision")
+        
+        if not GOOGLE_CREDENTIALS_PATH:
+            raise RuntimeError("GOOGLE_APPLICATION_CREDENTIALS environment variable not set")
+        
+        # Initialize Vision API client
+        client = vision.ImageAnnotatorClient()
+        
+        # Create image object
+        image = types.Image(content=image_bytes)
+        
+        # Prepare requests for Vision API
+        requests = [
+            {
+                'image': image,
+                'features': [
+                    {'type_': vision.Feature.Type.LABEL_DETECTION, 'max_results': 20},
+                    {'type_': vision.Feature.Type.TEXT_DETECTION, 'max_results': 10},
+                    {'type_': vision.Feature.Type.SAFE_SEARCH_DETECTION},
+                ]
+            }
+        ]
+        
+        batch_request = types.AnnotateImageRequest(
+            image=image,
+            features=[
+                types.Feature(type_=vision.Feature.Type.LABEL_DETECTION, max_results=20),
+                types.Feature(type_=vision.Feature.Type.TEXT_DETECTION, max_results=10),
+                types.Feature(type_=vision.Feature.Type.SAFE_SEARCH_DETECTION),
+            ]
         )
-
-        try:
-            resp = openai.ChatCompletion.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=300,
-            )
-            text = resp.choices[0].message.content
-        except Exception:
-            resp = openai.Completion.create(model="text-davinci-003", prompt=prompt, max_tokens=300)
-            text = resp.choices[0].text
-
-        try:
-            return json.loads(text.strip())
-        except Exception:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start != -1 and end != -1:
-                return json.loads(text[start:end+1])
-        raise RuntimeError("Failed to parse AI response")
-    except Exception:
+        
+        response = client.annotate_image(batch_request)
+        
+        # Extract labels and safe search results
+        labels = [label.description for label in response.label_annotations]
+        safe_search = response.safe_search_annotation
+        
+        # Analyze food safety based on labels and content
+        edible_human = analyze_food_safety_human(labels, safe_search)
+        edible_animal = analyze_food_safety_animal(labels)
+        compost = analyze_compost_safety(labels)
+        
+        notes = generate_food_notes(labels, safe_search)
+        
+        return {
+            "edible_human": edible_human,
+            "edible_animal": edible_animal,
+            "compost": compost,
+            "notes": notes,
+            "labels_detected": labels[:10],  # Top 10 labels
+            "confidences": {
+                "edible_human": 0.8 if edible_human else 0.3,
+                "edible_animal": 0.8 if edible_animal else 0.3,
+                "compost": 0.85 if compost else 0.2,
+            },
+        }
+    except Exception as e:
+        error_msg = f"AI Classification Error: {str(e)}"
+        print(error_msg)
         return {
             "edible_human": False,
-            "compost": False,
             "edible_animal": True,
-            "notes": "AI classification unavailable or failed; please verify manually.",
-            "confidences": {"edible_human": 0.0, "compost": 0.0, "edible_animal": 0.5},
+            "compost": True,
+            "notes": f"Google Cloud Vision analysis failed. {error_msg}. Please verify manually.",
+            "labels_detected": [],
+            "confidences": {"edible_human": 0.0, "edible_animal": 0.5, "compost": 0.5},
         }
+
+
+def analyze_food_safety_human(labels, safe_search):
+    """Determine if food is safe for human consumption."""
+    unsafe_keywords = ['mold', 'rot', 'spoiled', 'expired', 'contaminated', 'toxic', 'poison', 'waste']
+    safe_keywords = ['fresh', 'bread', 'fruit', 'vegetable', 'salad', 'pastry', 'baked', 'clean']
+    
+    label_lower = ' '.join([l.lower() for l in labels])
+    
+    # Check for unsafe indicators
+    for keyword in unsafe_keywords:
+        if keyword in label_lower:
+            return False
+    
+    # Check safe search
+    if safe_search:
+        if safe_search.adult == vision.Likelihood.LIKELY or safe_search.adult == vision.Likelihood.VERY_LIKELY:
+            return False
+    
+    # Check for safe indicators
+    for keyword in safe_keywords:
+        if keyword in label_lower:
+            return True
+    
+    return len(labels) > 0
+
+
+def analyze_food_safety_animal(labels):
+    """Determine if food is safe for animals."""
+    unsafe_for_animals = ['chocolate', 'onion', 'garlic', 'avocado', 'grape', 'xylitol', 'alcohol', 'toxic']
+    label_lower = ' '.join([l.lower() for l in labels])
+    
+    for keyword in unsafe_for_animals:
+        if keyword in label_lower:
+            return False
+    
+    return len(labels) > 0
+
+
+def analyze_compost_safety(labels):
+    """Determine if food can be composted."""
+    non_compostable = ['plastic', 'metal', 'glass', 'styrofoam', 'container']
+    label_lower = ' '.join([l.lower() for l in labels])
+    
+    for keyword in non_compostable:
+        if keyword in label_lower:
+            return False
+    
+    return True
+
+
+def generate_food_notes(labels, safe_search):
+    """Generate descriptive notes about the food."""
+    if not labels:
+        return "Unable to identify food items in the image."
+    
+    notes = f"Detected: {', '.join(labels[:5])}. "
+    
+    if safe_search:
+        if safe_search.adult == vision.Likelihood.POSSIBLE:
+            notes += "Contains potentially unsafe content. "
+    
+    notes += "Please verify classifications manually if unsure."
+    return notes
 
 
 def initialize_state():
     if 'current_page' not in st.session_state:
         st.session_state.current_page = "dashboard"
     
+    if 'setup_shown' not in st.session_state:
+        st.session_state.setup_shown = False
     if 'reports' not in st.session_state:
         st.session_state.reports = [
             {
@@ -212,11 +322,14 @@ def initialize_state():
     if 'ai_result' not in st.session_state:
         st.session_state.ai_result = None
     
-    if 'show_msg_form' not in st.session_state:
-        st.session_state.show_msg_form = None
-    
-    if 'show_donor_msg' not in st.session_state:
-        st.session_state.show_donor_msg = None
+    if 'active_message_form' not in st.session_state:
+        st.session_state.active_message_form = None
+    if 'message_form_type' not in st.session_state:
+        st.session_state.message_form_type = None
+    if 'message_phone' not in st.session_state:
+        st.session_state.message_phone = ""
+    if 'message_text' not in st.session_state:
+        st.session_state.message_text = ""
 
 
 def build_sidebar():
@@ -234,26 +347,24 @@ def build_sidebar():
         st.sidebar.markdown(f"**Role:** {st.session_state.user_role}")
         
         st.sidebar.divider()
-        col1, col2, col3 = st.sidebar.columns(3)
+        col1, col2 = st.sidebar.columns(2)
         with col1:
-            if st.button("← Back", key="back_btn", use_container_width=True):
+            if st.button("← Back to Login", key="back_btn", use_container_width=True):
                 st.session_state.authenticated = False
                 st.session_state.user_role = None
                 st.session_state.user_name = None
                 st.session_state.tmp_image_b64 = None
                 st.session_state.ai_result = None
+                st.session_state.current_page = "dashboard"
                 st.rerun()
         with col2:
-            if st.button("🔧 Classify", key="classify_tool_btn", use_container_width=True):
-                st.session_state.current_page = "classify"
-                st.rerun()
-        with col3:
             if st.button("📱 Logout", key="logout_btn", use_container_width=True):
                 st.session_state.authenticated = False
                 st.session_state.user_role = None
                 st.session_state.user_name = None
                 st.session_state.tmp_image_b64 = None
                 st.session_state.ai_result = None
+                st.session_state.current_page = "dashboard"
                 st.rerun()
 
 
@@ -277,50 +388,6 @@ def render_login():
             st.session_state.user_role = role
             st.success(f"Welcome, {name}! Redirecting to your {role} dashboard.")
             st.rerun()
-
-
-def classification_tool_page():
-    """Dedicated page for AI image classification."""
-    st.title("🔬 AI Classification Tool")
-    st.info("Upload food images to get AI-powered safety classifications for any food item.")
-    
-    uploaded_file = st.file_uploader("Upload food image", type=["png", "jpg", "jpeg"], key="classify_image")
-    
-    if uploaded_file:
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            st.image(uploaded_file, caption="Uploaded image", use_column_width=True)
-        
-        with col2:
-            st.subheader("Analysis Options")
-            if st.button("🔍 Analyze with AI", use_container_width=True):
-                image_bytes = uploaded_file.read()
-                with st.spinner("Running AI analysis..."):
-                    ai_result = classify_image_with_ai(image_bytes)
-                
-                st.subheader("Classification Results")
-                col_a, col_b, col_c = st.columns(3)
-                with col_a:
-                    status = "✅ Safe" if ai_result.get("edible_human") else "❌ Not Safe"
-                    st.metric("For Humans", status)
-                with col_b:
-                    status = "✅ Safe" if ai_result.get("edible_animal") else "❌ Not Safe"
-                    st.metric("For Animals", status)
-                with col_c:
-                    status = "✅ Yes" if ai_result.get("compost") else "❌ No"
-                    st.metric("For Compost", status)
-                
-                st.write("**AI Notes:**", ai_result.get("notes", "No notes provided"))
-                
-                if "confidences" in ai_result:
-                    st.subheader("Confidence Scores")
-                    conf = ai_result["confidences"]
-                    st.progress(conf.get("edible_human", 0), text=f"Human Safety: {conf.get('edible_human', 0):.0%}")
-                    st.progress(conf.get("edible_animal", 0), text=f"Animal Safety: {conf.get('edible_animal', 0):.0%}")
-                    st.progress(conf.get("compost", 0), text=f"Composting: {conf.get('compost', 0):.0%}")
-                
-                st.subheader("Full AI Response")
-                st.json(ai_result)
 
 
 def volunteer_page():
@@ -391,40 +458,50 @@ def volunteer_page():
                     
                     with col_claim2:
                         if st.button(f"💬 Message", key=f"msg_{row['id']}", use_container_width=True):
-                            st.session_state.show_msg_form = row["id"]
+                            st.session_state.active_message_form = f"volunteer_{row['id']}"
                             st.rerun()
                     
-                    # WhatsApp message form
-                    if st.session_state.get("show_msg_form") == row["id"]:
-                        with st.expander("📱 Send WhatsApp Message", expanded=True):
-                            contact_phone = st.text_input(
-                                "Your WhatsApp number (e.g., whatsapp:+1234567890)",
-                                key=f"volunteer_phone_{row['id']}"
-                            )
-                            msg_text = st.text_area(
-                                "Message to donor",
-                                value=f"Hi, I'm interested in claiming the pickup from {row['restaurant']} ({row['waste_description']}). Can I contact you about pickup time?",
-                                key=f"vol_msg_{row['id']}"
-                            )
-                            col_msg1, col_msg2 = st.columns(2)
-                            with col_msg1:
-                                if st.button(f"Send Message", key=f"send_msg_{row['id']}", use_container_width=True):
-                                    if not contact_phone:
-                                        st.warning("Please enter your WhatsApp number")
-                                    else:
-                                        # Send notification to admin with volunteer's contact
-                                        admin_msg = f"📲 *Volunteer Inquiry*\n\n👤 {st.session_state.user_name}\n📱 {contact_phone}\n\n📍 Report #{row['id']} - {row['restaurant']}\n\n💬 Message:\n{msg_text}"
-                                        result = send_whatsapp_message(ADMIN_WHATSAPP_NUMBER, admin_msg)
-                                        if result["status"] != "error":
-                                            st.success("Message sent to admin & donor!")
-                                        else:
-                                            st.warning(f"Failed to send: {result.get('message')}")
-                                        st.session_state.show_msg_form = None
+                    # WhatsApp message form - only show if this is the active form
+                    if st.session_state.get("active_message_form") == f"volunteer_{row['id']}":
+                        st.divider()
+                        st.subheader("📱 Send WhatsApp Message to Donor")
+                        
+                        contact_phone = st.text_input(
+                            "Your WhatsApp number",
+                            placeholder="whatsapp:+1234567890",
+                            key=f"vol_phone_{row['id']}"
+                        )
+                        msg_text = st.text_area(
+                            "Your message",
+                            value=f"Hi, I'm interested in claiming the pickup from {row['restaurant']}. Can I contact you about pickup details?",
+                            height=100,
+                            key=f"vol_text_{row['id']}"
+                        )
+                        
+                        col_send, col_cancel = st.columns(2)
+                        with col_send:
+                            if st.button("✅ Send Message", key=f"send_vol_{row['id']}", use_container_width=True):
+                                if not contact_phone:
+                                    st.error("❌ Please enter your WhatsApp number")
+                                else:
+                                    admin_msg = f"📲 *Volunteer Inquiry*\n\n👤 {st.session_state.user_name}\n📱 {contact_phone}\n\n🏪 {row['restaurant']}\n📍 Report #{row['id']}\n\n💬 Message:\n{msg_text}"
+                                    result = send_whatsapp_message(ADMIN_WHATSAPP_NUMBER, admin_msg)
+                                    if result["status"] == "sent":
+                                        st.success("✅ Message sent to admin!")
+                                        st.session_state.active_message_form = None
                                         st.rerun()
-                            with col_msg2:
-                                if st.button("Cancel", key=f"cancel_msg_{row['id']}", use_container_width=True):
-                                    st.session_state.show_msg_form = None
-                                    st.rerun()
+                                    elif result["status"] == "demo":
+                                        st.info(f"📌 Demo Mode: {result.get('message')}")
+                                        st.session_state.active_message_form = None
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ Failed: {result.get('message')}")
+                        
+                        with col_cancel:
+                            if st.button("❌ Cancel", key=f"cancel_vol_{row['id']}", use_container_width=True):
+                                st.session_state.active_message_form = None
+                                st.rerun()
+                        st.divider()
     else:
         st.warning("No opportunities match the selected filters.")
 
@@ -437,39 +514,55 @@ def volunteer_page():
                 st.write(f"- #{claim['id']} {claim['restaurant']} — {claim['waste_description']} ({claim['status']})")
             with col2:
                 if st.button("💬", key=f"contact_donor_{claim['id']}", help="Contact donor", use_container_width=True):
-                    st.session_state.show_donor_msg = claim['id']
+                    st.session_state.active_message_form = f"claimed_{claim['id']}"
                     st.rerun()
             
-            # Contact donor form
-            if st.session_state.get("show_donor_msg") == claim['id']:
-                with st.expander("📱 Send Message to Donor", expanded=True):
-                    donor_msg = st.text_area(
-                        "Message to donor",
-                        value=f"Hi, I'm here for the pickup of {claim['waste_description']} from your restaurant. When is convenient for pickup?",
-                        key=f"donor_contact_msg_{claim['id']}"
-                    )
-                    col_d1, col_d2 = st.columns(2)
-                    with col_d1:
-                        if st.button("Send via Admin", key=f"send_to_donor_{claim['id']}", use_container_width=True):
-                            admin_msg = f"📲 *Pickup Notification*\n\n🏘️ {st.session_state.user_name} is ready for pickup!\n\n📍 Report #{claim['id']} - {claim['restaurant']}\n\n💬 Message:\n{donor_msg}"
-                            result = send_whatsapp_message(ADMIN_WHATSAPP_NUMBER, admin_msg)
-                            if result["status"] != "error":
-                                st.success("Message sent to admin to relay to donor!")
-                            else:
-                                st.warning(f"Failed: {result.get('message')}")
-                            st.session_state.show_donor_msg = None
+            # Contact donor form - only show if this is the active form
+            if st.session_state.get("active_message_form") == f"claimed_{claim['id']}":
+                st.divider()
+                st.subheader("📱 Send Message to Donor")
+                
+                donor_msg = st.text_area(
+                    "Your message",
+                    value=f"Hi, I'm here for the pickup of {claim['waste_description']}. When is convenient for pickup?",
+                    height=100,
+                    key=f"claimed_text_{claim['id']}"
+                )
+                
+                col_d1, col_d2 = st.columns(2)
+                with col_d1:
+                    if st.button("✅ Send to Admin", key=f"send_claimed_{claim['id']}", use_container_width=True):
+                        admin_msg = f"📲 *Pickup Ready*\n\n👤 {st.session_state.user_name} is ready for pickup!\n\n🏪 {claim['restaurant']}\n📍 Report #{claim['id']}\n\n💬 Message:\n{donor_msg}"
+                        result = send_whatsapp_message(ADMIN_WHATSAPP_NUMBER, admin_msg)
+                        if result["status"] == "sent":
+                            st.success("✅ Message sent to admin to relay to donor!")
+                            st.session_state.active_message_form = None
                             st.rerun()
-                    with col_d2:
-                        if st.button("Cancel", key=f"cancel_donor_{claim['id']}", use_container_width=True):
-                            st.session_state.show_donor_msg = None
+                        elif result["status"] == "demo":
+                            st.info(f"📌 Demo Mode: {result.get('message')}")
+                            st.session_state.active_message_form = None
                             st.rerun()
+                        else:
+                            st.error(f"❌ Failed: {result.get('message')}")
+                
+                with col_d2:
+                    if st.button("❌ Cancel", key=f"cancel_claimed_{claim['id']}", use_container_width=True):
+                        st.session_state.active_message_form = None
+                        st.rerun()
+                st.divider()
     else:
         st.write("You have not claimed any pickups yet.")
 
 
 def admin_page():
-    st.title("Admin Dashboard")
-    st.info("Review reports, verify AI classifications, and update statuses.")
+    st.title("👨‍💼 Admin Dashboard")
+    st.info("Review reports, approve images, verify AI classifications, and update statuses.")
+    
+    st.markdown("### 📋 Approval Workflow")
+    st.markdown("1. **Donor submits** food report with photo")
+    st.markdown("2. **You approve image** (click '✅ Approve Image')")
+    st.markdown("3. **You run AI verification** (click 'AI verify image') to get safety classifications")
+    st.markdown("4. **Report is ready** for volunteers to claim")
 
     report_df = pd.DataFrame(st.session_state.reports)
     st.markdown("### Current Reports")
@@ -515,14 +608,9 @@ def admin_page():
                     st.rerun()
 
             with col3:
-                if st.button(f"Approve Report #{report['id']}", key=f"admin_approve_{report['id']}"):
+                if st.button(f"✅ Approve Image #{report['id']}", key=f"admin_approve_{report['id']}"):
                     report["admin_approved"] = True
-                    msg = f"🔔 *Food Report Approved*\n\nReport #{report['id']} from {report['restaurant']} is ready for AI verification.\n\n🖼️ Image: {'Available' if report.get('image_b64') else 'Not available'}\n\n{report['waste_description']}"
-                    result = send_whatsapp_message(ADMIN_WHATSAPP_NUMBER, msg)
-                    if result["status"] == "error":
-                        st.warning(f"Report approved but WhatsApp notification failed: {result.get('message', 'Unknown error')}")
-                    else:
-                        st.success("Report approved. Admin notified via WhatsApp.")
+                    st.success("✅ Report image approved! Now you can verify with AI below.")
                     st.rerun()
 
             if report.get("image_b64") and report.get("admin_approved") and not report.get("ai_verified"):
@@ -566,8 +654,8 @@ def admin_page():
 
 
 def donor_page():
-    st.title("Restaurant / Donor Reporting")
-    st.info("Upload surplus pictures and provide quantity and safety details for volunteers.")
+    st.title("🏪 Restaurant / Donor Reporting")
+    st.info("Upload surplus pictures and provide quantity and safety details for volunteers. Admin will verify classifications.")
 
     uploaded_file = st.file_uploader("Upload photo of surplus (optional)", type=["png", "jpg", "jpeg"], key="donor_image")
     r_name = st.text_input("Restaurant / Store Name", "Your Restaurant Name", key="donor_name")
@@ -646,23 +734,42 @@ def main():
         initial_sidebar_state="expanded",
     )
 
+    # Show setup instructions if credentials not configured
+    if not st.session_state.get("setup_shown"):
+        with st.expander("📋 Setup Instructions (Click to expand)", expanded=False):
+            st.markdown("""
+            ### 🔧 API Configuration Required
+            
+            #### Google Cloud Vision API (for Food Recognition)
+            1. Create a Google Cloud project: https://console.cloud.google.com
+            2. Enable Vision API in your project
+            3. Create a Service Account and download JSON key
+            4. Set environment variable:
+               ```bash
+               export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account-key.json"
+               export GOOGLE_PROJECT_ID="your-project-id"
+               ```
+            5. Install SDK: `pip install google-cloud-vision`
+            
+            #### Twilio WhatsApp API (for Messaging)
+            1. Create a Twilio account: https://www.twilio.com
+            2. Set up WhatsApp business account
+            3. Set environment variables:
+               ```bash
+               export TWILIO_ACCOUNT_SID="your-account-sid"
+               export TWILIO_AUTH_TOKEN="your-auth-token"
+               export TWILIO_WHATSAPP_NUMBER="whatsapp:+1234567890"
+               export ADMIN_WHATSAPP_NUMBER="whatsapp:+1234567890"
+               ```
+            """)
+            st.session_state.setup_shown = True
+    
     initialize_state()
     build_sidebar()
 
     if not st.session_state.authenticated:
         render_login()
         return
-
-    # Check if user clicked on classification tool
-    if st.session_state.get("current_page") == "classify":
-        if st.button("← Back to Dashboard", key="back_from_classify"):
-            st.session_state.current_page = "dashboard"
-            st.rerun()
-        classification_tool_page()
-        return
-    
-    # Reset to dashboard view
-    st.session_state.current_page = "dashboard"
 
     if st.session_state.user_role == "Volunteer / Shelter":
         volunteer_page()
