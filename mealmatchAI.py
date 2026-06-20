@@ -7,17 +7,29 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-GOOGLE_VISION_KEY_PATH = r"C:\Users\khush\Downloads\graceful-goods-500005-s8-cfb0f75b4a16.json"
-if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS") and os.path.exists(GOOGLE_VISION_KEY_PATH):
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = GOOGLE_VISION_KEY_PATH
-
 try:
     from google.cloud import vision
+    from google.oauth2 import service_account
 except ImportError:
     vision = None
+    service_account = None
 
 
 ADMIN_WHATSAPP_NUMBER = os.getenv("ADMIN_WHATSAPP_NUMBER", "whatsapp:+1234567890")
+
+
+def get_vision_client():
+    """Create a Google Vision client from Streamlit Cloud secrets or local credentials."""
+    if not vision:
+        raise RuntimeError("Google Vision is not installed. Add google-cloud-vision to requirements.txt.")
+
+    if service_account and "gcp_service_account" in st.secrets:
+        credentials = service_account.Credentials.from_service_account_info(
+            dict(st.secrets["gcp_service_account"])
+        )
+        return vision.ImageAnnotatorClient(credentials=credentials)
+
+    return vision.ImageAnnotatorClient()
 
 
 def calculate_distance(lat1, lon1, lat2, lon2):
@@ -161,7 +173,7 @@ def classify_image_with_ai(image_bytes):
         }
 
     try:
-        client = vision.ImageAnnotatorClient()
+        client = get_vision_client()
         image = vision.Image(content=image_bytes)
         label_response = client.label_detection(image=image)
         safe_response = client.safe_search_detection(image=image)
