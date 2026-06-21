@@ -42,6 +42,7 @@ def apply_app_theme():
         }
         h1, h2, h3 {
             color: var(--meal-olive-dark);
+            font-size: 2.4rem;
         }
         [data-testid="stSidebar"] {
             background: linear-gradient(180deg, var(--meal-olive-soft), #ffffff);
@@ -87,6 +88,24 @@ def apply_app_theme():
         """,
         unsafe_allow_html=True,
     )
+    st.markdown("""
+<style>
+.block-container {
+    padding-top: 0rem !important;
+    margin-top: 0rem !important;
+}
+
+[data-testid="stAppViewContainer"] {
+    padding-top: 0rem !important;
+    margin-top: 0rem !important;
+}
+
+header[data-testid="stHeader"] {
+    display: none;
+}
+</style>
+""", unsafe_allow_html=True)
+    
     def get_base64_image(image_file):
         with open(image_file, "rb") as f:
             return base64.b64encode(f.read()).decode()
