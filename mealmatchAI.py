@@ -111,7 +111,7 @@ header[data-testid="stHeader"] {
             return base64.b64encode(f.read()).decode()
 
     st.image("LOGO (2).png", width=300)
-    img = get_base64_image("Background.png")
+    img = get_base64_image("MMAIBG.png")
 
     st.markdown(
         f"""
