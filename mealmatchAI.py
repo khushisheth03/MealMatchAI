@@ -82,10 +82,11 @@ def apply_app_theme():
             color: #65714a;
             font-size: 0.82rem;
             margin-bottom: 4px;
-        }
-        st.image("Logo (3).png", width=300)
-        img = get_base64_image("Background.png")
-        st.markdown(
+        } """"
+    st.image("Logo (3).png", width=300)
+    img = get_base64_image("Background.png")
+
+    st.markdown(
         f"""
         <style>
         .stApp {{
@@ -94,15 +95,11 @@ def apply_app_theme():
             background-position: center;
             background-repeat: no-repeat;
             background-attachment: fixed;
-            }}
+    }}
     </style>
     """,
-    unsafe_allow_html=True
-        </style>
-        """,
-        unsafe_allow_html=True,
-        
-    )
+    unsafe_allow_html=True,
+)
 
 
 def get_location_coords(area):
