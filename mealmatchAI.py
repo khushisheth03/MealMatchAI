@@ -764,7 +764,7 @@ def render_login():
 )
     st.markdown(
     """
-    <h1 style='font-size:30px; color:#427f12;'>
+    <h1 style='font-size:30px; color:#ba2e08;'>
         Match surplus food with shelters, animal care groups, and compost partners An AI Solution by Khushi Sheth and Himagna Simhadri.
     </h1>
     """,
