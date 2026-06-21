@@ -82,7 +82,7 @@ def apply_app_theme():
             color: #65714a;
             font-size: 0.82rem;
             margin-bottom: 4px;
-        } """"
+        } """
     st.image("Logo (3).png", width=300)
     img = get_base64_image("Background.png")
 
