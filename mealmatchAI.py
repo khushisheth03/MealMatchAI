@@ -82,7 +82,7 @@ def apply_app_theme():
             font-size: 0.82rem;
             margin-bottom: 4px;
         }
-        st.image("Logo.png", width=300)
+        st.image("Logo(3).png", width=300)
         </style>
         """,
         unsafe_allow_html=True,
