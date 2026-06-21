@@ -764,8 +764,8 @@ def render_login():
 )
     st.markdown(
     """
-    <h1 style='font-size:30px; color:#ba2e08; font-family:"Times New Roman", Times, serif;'>
-        Match surplus food with shelters, animal care groups, and compost partners An AI Solution by Khushi Sheth and Himagna Simhadri.
+    <h1 style='font-size:30px; color:#427f12; font-family:"Times New Roman", Times, serif;'>
+        Match surplus food with shelters, animal care groups, and compost partners | An AI Solution by Khushi Sheth and Himagna Simhadri.
     </h1>
     """,
     unsafe_allow_html=True
@@ -773,7 +773,7 @@ def render_login():
     col_intro, col_login = st.columns([1.1, 1])
     with col_intro:
         st.subheader("Rescue the right food faster")
-        st.write("Restaurants upload a photo, MealMatch classifies food, admins approve, and volunteers coordinate pickup in one place.")
+        st.write("Restaurants upload a photo, MealMatch AI classifies food, admins approve, and volunteers coordinate pickup in one place.")
         m1, m2, m3 = st.columns(3)
         m1.metric("Routes", "3", "Human, animal, compost")
         m2.metric("Approval", "Admin", "Required")
