@@ -12,11 +12,11 @@ import streamlit as st
 HF_MODEL = os.getenv("HF_MODEL", "nateraw/food")
 
 LOCATION_PRESETS = {
-    "Downtown Metro": (40.7128, -74.0060),
-    "Downtown": (23.0339, 72.5850),
-    "Northside": (40.7580, -73.9855),
+    "Downtown Metro": (23.0363, 72.5306),
+    "Downtown": (23.06741, 72.5850),
+    "Northside": (23.97154, 73.9855),
     "Southside": (40.6892, -74.0445),
-    "West End": (40.7306, -73.9971),
+    "West End": (23.0120, 72.5108),
 }
 
 
