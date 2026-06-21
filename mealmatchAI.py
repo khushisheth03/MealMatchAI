@@ -25,7 +25,7 @@ def apply_app_theme():
         """
         <style>
         :root {
-            --olive-grean: #8d8b55
+            --olive-grean: #8d8b55;
             --meal-olive: #5f6f38;
             --meal-olive-dark: #34451f;
             --meal-olive-soft: #eef3e2;
@@ -83,6 +83,7 @@ def apply_app_theme():
             font-size: 0.82rem;
             margin-bottom: 4px;
         } """
+    )
     st.image("Logo (3).png", width=300)
     img = get_base64_image("Background.png")
 
