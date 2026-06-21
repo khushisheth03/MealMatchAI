@@ -84,6 +84,10 @@ def apply_app_theme():
             margin-bottom: 4px;
         } """
     )
+    def get_base64_image(image_file):
+        with open(image_file, "rb") as f:
+        return base64.b64encode(f.read()).decode()
+
     st.image("Logo (3).png", width=300)
     img = get_base64_image("Background.png")
 
