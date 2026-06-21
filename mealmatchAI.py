@@ -754,13 +754,26 @@ def logout():
 
 
 def render_login():
-    st.title("MealMatch")
-    st.caption("Match surplus food with shelters, animal care groups, and compost partners.")
-
+    st.markdown(
+    """
+    <h1 style='font-size:80px; color:#2d570c;'>
+        MealMatchAI Ahmedabad
+    </h1>
+    """,
+    unsafe_allow_html=True
+)
+    st.markdown(
+    """
+    <h1 style='font-size:65px; color:#427f12;'>
+        Match surplus food with shelters, animal care groups, and compost partners An AI Solution by Khushi Sheth and Himagna Simhadri.
+    </h1>
+    """,
+    unsafe_allow_html=True
+)
     col_intro, col_login = st.columns([1.1, 1])
     with col_intro:
         st.subheader("Rescue the right food faster")
-        st.write("Restaurants upload a photo, MealMatch suggests safe routing, admins approve, and volunteers coordinate pickup in one place.")
+        st.write("Restaurants upload a photo, MealMatch classifies food, admins approve, and volunteers coordinate pickup in one place.")
         m1, m2, m3 = st.columns(3)
         m1.metric("Routes", "3", "Human, animal, compost")
         m2.metric("Approval", "Admin", "Required")
