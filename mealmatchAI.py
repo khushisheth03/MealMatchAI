@@ -88,7 +88,7 @@ def apply_app_theme():
         with open(image_file, "rb") as f:
             return base64.b64encode(f.read()).decode()
 
-    st.image("Logo (3).png", width=300)
+    st.image("LOGO (2).png", width=300)
     img = get_base64_image("Background.png")
 
     st.markdown(
