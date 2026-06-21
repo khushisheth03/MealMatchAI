@@ -82,7 +82,10 @@ def apply_app_theme():
             color: #65714a;
             font-size: 0.82rem;
             margin-bottom: 4px;
-        } """
+        } 
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
     def get_base64_image(image_file):
         with open(image_file, "rb") as f:
