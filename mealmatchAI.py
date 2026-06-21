@@ -756,7 +756,7 @@ def logout():
 def render_login():
     st.markdown(
     """
-    <h1 style='font-size:65px; color:#2d570c; font-family:"Times New Roman", Times, serif;'>
+    <h1 style='font-size:50px; color:#2d570c; font-family:"Times New Roman", Times, serif;'>
         MealMatchAI Ahmedabad
     </h1>
     """,
@@ -764,7 +764,7 @@ def render_login():
 )
     st.markdown(
     """
-    <h1 style='font-size:30px; color:#427f12; font-family:"Times New Roman", Times, serif;'>
+    <h1 style='font-size:20px; color:#427f12; font-family:"Inter", sans-serif;'>
         Match surplus food with shelters, animal care groups, and compost partners | An AI Solution by Khushi Sheth and Himagna Simhadri.
     </h1>
     """,
