@@ -756,7 +756,7 @@ def logout():
 def render_login():
     st.markdown(
     """
-    <h1 style='font-size:50px; color:#2d570c; font-family:"Times New Roman", Times, serif;'>
+    <h1 style='font-size:50px; color:#2d570c; font-family:"Inter", sans-serif;'>
         MealMatchAI Ahmedabad
     </h1>
     """,
